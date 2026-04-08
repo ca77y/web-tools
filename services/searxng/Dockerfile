@@ -2,6 +2,13 @@ FROM searxng/searxng:latest
 
 COPY settings.yml /etc/searxng/settings.yml.tpl
 
+ADD google_sorry_fix.py /tmp/google_sorry_fix.py
+RUN GOOGLE_PY=/usr/local/searxng/searx/engines/google.py && \
+    python3 /tmp/google_sorry_fix.py "$GOOGLE_PY" && \
+    rm /tmp/google_sorry_fix.py && \
+    find /usr/local/searxng/searx -name "__pycache__" -type d -exec rm -rf {} + && \
+    python3 -m compileall -q -f -j 0 --invalidation-mode=unchecked-hash /usr/local/searxng/searx/
+
 ENTRYPOINT ["sh", "-c", "\
 if [ -n \"$PROXY_URL\" ]; then \
   sed \"s|\\${PROXY_URL}|$PROXY_URL|g\" /etc/searxng/settings.yml.tpl > /etc/searxng/settings.yml; \

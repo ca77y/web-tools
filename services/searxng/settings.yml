@@ -26,9 +26,13 @@ search:
 outgoing:
   request_timeout: 15.0
   max_request_timeout: 20.0
+  enable_http2: false
   retries: 2
   pool_connections: 20
   pool_maxsize: 20
+  source_ips:
+    - 0.0.0.0
+  verify: false
   proxies:
     all://:
       - ${PROXY_URL}
