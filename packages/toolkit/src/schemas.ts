@@ -27,6 +27,18 @@ export const WebFetchInput = z.object({
   provider: z.string().optional().describe('LLM provider for LLM filter (e.g. "openai/gpt-4")'),
   temperature: z.number().optional().describe('Temperature for LLM filter'),
   base_url: z.string().optional().describe('Base URL override for the LLM provider'),
+  session_id: z
+    .string()
+    .optional()
+    .describe(
+      'Crawl4AI session id — pass the same string across calls to reuse the browser context (cookies survive, so cf_clearance from the first call skips the JS challenge on subsequent calls).',
+    ),
+  delay: z
+    .number()
+    .optional()
+    .describe(
+      'Override delay_before_return_html (seconds, default 15). Drop to ~3 for "warm" calls in an existing session_id where CF is already cleared.',
+    ),
 });
 
 export const WebScreenshotInput = z.object({

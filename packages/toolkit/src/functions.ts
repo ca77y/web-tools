@@ -108,6 +108,16 @@ export async function web_fetch(params: Record<string, unknown>): Promise<ToolRe
     };
   }
 
+  // Optional Crawl4AI session_id — when callers pass the same id across
+  // calls, Crawl4AI reuses the browser context, so the cf_clearance
+  // cookie set on the first call carries over and subsequent calls skip
+  // the JS challenge (~25s → ~3s).
+  const sessionId = typeof params.session_id === 'string' ? params.session_id : undefined;
+  // Override delay_before_return_html — useful for "warm" calls in an
+  // existing session where CF is already cleared.
+  const delay =
+    typeof params.delay === 'number' && Number.isFinite(params.delay) ? params.delay : 15;
+
   return proxyCrawl4AI('crawl', async () => {
     const resp = (await callCrawlTool({
       urls: [url],
@@ -117,7 +127,8 @@ export async function web_fetch(params: Record<string, unknown>): Promise<ToolRe
         params: {
           wait_until: 'load',
           page_timeout: 120000,
-          delay_before_return_html: 15,
+          delay_before_return_html: delay,
+          ...(sessionId ? { session_id: sessionId } : {}),
         },
       },
     })) as ToolResult;
