@@ -92,7 +92,11 @@ export async function web_fetch(params: Record<string, unknown>): Promise<ToolRe
   }
   const filter = ((params.f as string | undefined) ?? 'fit').toLowerCase();
 
-  const browserParams: Record<string, unknown> = { headless: true };
+  // Recipe verified 5/5 against ufficiocamerale.it (Cloudflare-protected):
+  // enable_stealth + wait_until:"load" + delay 15s + Italian residential proxy.
+  // We deliberately do NOT enable magic/simulate_user/override_navigator —
+  // those trigger Crawl4AI's pre-emptive CF detection and fingerprint as bot.
+  const browserParams: Record<string, unknown> = { headless: true, enable_stealth: true };
   if (Config.proxy) {
     browserParams.proxy_config = {
       type: 'ProxyConfig',
@@ -111,14 +115,9 @@ export async function web_fetch(params: Record<string, unknown>): Promise<ToolRe
       crawler_config: {
         type: 'CrawlerRunConfig',
         params: {
-          magic: true,
-          simulate_user: true,
-          override_navigator: true,
-          remove_overlay_elements: true,
-          remove_consent_popups: true,
-          wait_until: 'domcontentloaded',
-          page_timeout: 90000,
-          delay_before_return_html: 4,
+          wait_until: 'load',
+          page_timeout: 120000,
+          delay_before_return_html: 15,
         },
       },
     })) as ToolResult;
@@ -165,6 +164,37 @@ export async function web_execute_js(params: Record<string, unknown>): Promise<T
 }
 
 export async function web_crawl(params: Record<string, unknown>): Promise<ToolResult> {
+  // Default sensible browser config (enable_stealth + residential proxy) when
+  // the caller didn't set their own. Keeps web_crawl symmetric with web_fetch.
+  const bc = (params.browser_config as { params?: Record<string, unknown> } | undefined) ?? {};
+  const bcParams = bc.params ?? {};
+  const needProxy = Config.proxy && !bcParams.proxy_config;
+  const needStealth = bcParams.enable_stealth === undefined;
+  if (needProxy || needStealth) {
+    params = {
+      ...params,
+      browser_config: {
+        type: 'BrowserConfig',
+        params: {
+          headless: true,
+          enable_stealth: true,
+          ...bcParams,
+          ...(needProxy
+            ? {
+                proxy_config: {
+                  type: 'ProxyConfig',
+                  params: {
+                    server: Config.proxy!.server,
+                    username: Config.proxy!.username,
+                    password: Config.proxy!.password,
+                  },
+                },
+              }
+            : {}),
+        },
+      },
+    };
+  }
   return proxyCrawl4AI('crawl', () => callCrawlTool(params));
 }
 
