@@ -12,12 +12,15 @@ import { getStats, recordCall, type ToolName } from './stats.js';
 import { getArchivedPage, getSnapshots } from './wayback.js';
 import type { ToolResult } from './types.js';
 
-// Regex matching the upstream Crawl4AI's anti-bot detector strings
-// AND the bare HTTP 429 indicator. When we see any of these in the
-// returned payload, signal the rotation module so it can kill the
-// browser and force a fresh iProyal IP.
+// Regex matching upstream Crawl4AI failure modes that benefit from a
+// browser rotation: explicit anti-bot signals (429, CF challenge) AND
+// internal Crawl4AI errors that almost always trace back to a wedged
+// browser context (BrowserContext closed, navigation timeout,
+// "Unexpected error in _crawl_web"). When we see any of these we
+// signal the rotation module to kill the hot browser — Crawl4AI
+// spawns a fresh one with a fresh proxy connection on the next call.
 const BLOCK_RE =
-  /HTTP 429|Too Many Requests|Cloudflare JS challenge|anti-bot protection|Just a moment\.\.\./i;
+  /HTTP 429|Too Many Requests|Cloudflare JS challenge|anti-bot protection|Just a moment\.\.\.|Unexpected error in _crawl_web|BrowserContext\.new_page|Navigation timeout|Connection closed while reading from the driver/i;
 
 // Count a tool invocation: bytes = size of the text payload we hand
 // back to the caller. For Crawl4AI tools this is the rendered HTML or
@@ -27,8 +30,12 @@ const BLOCK_RE =
 // browser kill (and thus an upstream IP rotation).
 function trace(tool: ToolName, result: ToolResult): ToolResult {
   const text = result.content?.[0]?.text ?? '';
-  recordCall(tool, text.length, !!result.isError);
-  if (BLOCK_RE.test(text)) noteBlocked();
+  const blocked = BLOCK_RE.test(text);
+  // Crawl4AI sometimes wraps upstream failures as 200-content with the
+  // error JSON in the text and isError absent — count those as errors
+  // too so /stats and the rotation counter see them.
+  recordCall(tool, text.length, !!result.isError || blocked);
+  if (blocked) noteBlocked();
   else if (text) noteSuccess();
   return result;
 }
