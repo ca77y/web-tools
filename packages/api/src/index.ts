@@ -1,6 +1,6 @@
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express, { Request, Response } from 'express';
-import { Config, tools } from '@web-tools/toolkit';
+import { Config, getStats, tools } from '@web-tools/toolkit';
 import { createServer } from './mcp.js';
 import { toolHandler } from './handler.js';
 
@@ -102,6 +102,14 @@ for (const tool of tools) {
 
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });
+});
+
+// ── Stats / cost monitoring ─────────────────────────────────────────
+// Process-local counters. In-memory; resets on container restart
+// (started_at reveals the reset). Same shape as the web_usage_stats
+// MCP tool — a plain GET so dashboards / cron can poll cheaply.
+app.get('/stats', (_req: Request, res: Response) => {
+  res.json(getStats());
 });
 
 // ── Start ────────────────────────────────────────────────────────────

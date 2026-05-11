@@ -7,6 +7,7 @@ import {
   WebCrawlInput,
   WebSnapshotsInput,
   WebArchiveInput,
+  WebUsageStatsInput,
 } from './schemas.js';
 import type { ToolDefinition } from './types.js';
 
@@ -97,6 +98,18 @@ export const tools: ToolDefinition[] = [
       destructiveHint: false,
       idempotentHint: true,
       openWorldHint: true,
+    },
+  },
+  {
+    name: 'web_usage_stats',
+    description:
+      'Return process-local usage counters (per-tool call counts, approximate proxy bandwidth, estimated USD cost). In-memory only — resets on container restart; the `started_at` field lets callers detect a restart.',
+    parameters: WebUsageStatsInput,
+    annotations: {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
     },
   },
 ];

@@ -7,6 +7,7 @@ export {
   WebCrawlInput,
   WebSnapshotsInput,
   WebArchiveInput,
+  WebUsageStatsInput,
 } from './schemas.js';
 
 export { tools, toolsByName } from './tools.js';
@@ -20,10 +21,12 @@ export {
   web_crawl,
   web_snapshots,
   web_archive,
+  web_usage_stats,
   functionMap,
 } from './functions.js';
 
 export { Config } from './config.js';
+export { getStats, recordCall } from './stats.js';
 
 export type {
   SearchResult,

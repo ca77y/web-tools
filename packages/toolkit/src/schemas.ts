@@ -170,3 +170,7 @@ export const WebArchiveInput = z.object({
     .optional()
     .describe('Get original content without Wayback Machine banner (default: false)'),
 });
+
+export const WebUsageStatsInput = z
+  .object({})
+  .describe('Process-local usage counters. No parameters.');

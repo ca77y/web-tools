@@ -7,8 +7,21 @@ import {
   callScreenshotTool,
 } from './crawl4ai.js';
 import { searchSearXNG } from './searxng.js';
+import { getStats, recordCall, type ToolName } from './stats.js';
 import { getArchivedPage, getSnapshots } from './wayback.js';
 import type { ToolResult } from './types.js';
+
+// Count a tool invocation: bytes = size of the text payload we hand
+// back to the caller. For Crawl4AI tools this is the rendered HTML or
+// markdown, which closely tracks proxy bandwidth (what iProyal bills).
+function trace(tool: ToolName, result: ToolResult): ToolResult {
+  const bytes = result.content?.[0]?.text?.length ?? 0;
+  recordCall(tool, bytes, !!result.isError);
+  return result;
+}
+function traceJson(tool: ToolName, payload: unknown): void {
+  recordCall(tool, JSON.stringify(payload).length, false);
+}
 
 const log = (...args: unknown[]) => {
   process.stderr.write(
@@ -76,6 +89,7 @@ export async function web_search(params: {
     limit: params.limit ?? 10,
     engines: params.engines,
   });
+  traceJson('web_search', results.data);
   return results.data;
 }
 
@@ -159,19 +173,23 @@ export async function web_fetch(params: Record<string, unknown>): Promise<ToolRe
       content: [{ type: 'text', text: md }],
       isError: !r.success,
     };
-  });
+  }).then((r) => trace('web_fetch', r));
 }
 
 export async function web_screenshot(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('screenshot', () => callScreenshotTool(params));
+  return proxyCrawl4AI('screenshot', () => callScreenshotTool(params)).then((r) =>
+    trace('web_screenshot', r),
+  );
 }
 
 export async function web_pdf(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('pdf', () => callPdfTool(params));
+  return proxyCrawl4AI('pdf', () => callPdfTool(params)).then((r) => trace('web_pdf', r));
 }
 
 export async function web_execute_js(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('execute_js', () => callExecuteJsTool(params));
+  return proxyCrawl4AI('execute_js', () => callExecuteJsTool(params)).then((r) =>
+    trace('web_execute_js', r),
+  );
 }
 
 export async function web_crawl(params: Record<string, unknown>): Promise<ToolResult> {
@@ -206,7 +224,9 @@ export async function web_crawl(params: Record<string, unknown>): Promise<ToolRe
       },
     };
   }
-  return proxyCrawl4AI('crawl', () => callCrawlTool(params));
+  return proxyCrawl4AI('crawl', () => callCrawlTool(params)).then((r) =>
+    trace('web_crawl', r),
+  );
 }
 
 export async function web_snapshots(params: {
@@ -225,6 +245,7 @@ export async function web_snapshots(params: {
     matchType: params.match_type,
     filter: params.filter,
   });
+  traceJson('web_snapshots', snapshots);
   return snapshots;
 }
 
@@ -236,13 +257,20 @@ export async function web_archive(params: {
   const { waybackUrl, content } = await getArchivedPage(params);
   const MAX_LENGTH = 50000;
   const truncated = content.length > MAX_LENGTH;
-  return {
+  const out = {
     waybackUrl,
     contentLength: content.length,
     content: truncated
       ? content.substring(0, MAX_LENGTH) + '\n\n[Content truncated]'
       : content,
   };
+  traceJson('web_archive', out);
+  return out;
+}
+
+// Process-local cost/usage counters. See stats.ts.
+export async function web_usage_stats(_params: Record<string, unknown>) {
+  return getStats();
 }
 
 // ── Function map ─────────────────────────────────────────────────────
@@ -256,4 +284,5 @@ export const functionMap: Record<string, (params: any) => Promise<any>> = {
   web_crawl,
   web_snapshots,
   web_archive,
+  web_usage_stats,
 };
