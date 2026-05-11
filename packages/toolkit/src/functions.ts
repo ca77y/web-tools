@@ -6,17 +6,30 @@ import {
   callPdfTool,
   callScreenshotTool,
 } from './crawl4ai.js';
+import { noteBlocked, noteSuccess } from './rotation.js';
 import { searchSearXNG } from './searxng.js';
 import { getStats, recordCall, type ToolName } from './stats.js';
 import { getArchivedPage, getSnapshots } from './wayback.js';
 import type { ToolResult } from './types.js';
 
+// Regex matching the upstream Crawl4AI's anti-bot detector strings
+// AND the bare HTTP 429 indicator. When we see any of these in the
+// returned payload, signal the rotation module so it can kill the
+// browser and force a fresh iProyal IP.
+const BLOCK_RE =
+  /HTTP 429|Too Many Requests|Cloudflare JS challenge|anti-bot protection|Just a moment\.\.\./i;
+
 // Count a tool invocation: bytes = size of the text payload we hand
 // back to the caller. For Crawl4AI tools this is the rendered HTML or
 // markdown, which closely tracks proxy bandwidth (what iProyal bills).
+// Also feeds the rotation module: anti-bot signals in the returned
+// payload count toward the consecutive-429 threshold that triggers a
+// browser kill (and thus an upstream IP rotation).
 function trace(tool: ToolName, result: ToolResult): ToolResult {
-  const bytes = result.content?.[0]?.text?.length ?? 0;
-  recordCall(tool, bytes, !!result.isError);
+  const text = result.content?.[0]?.text ?? '';
+  recordCall(tool, text.length, !!result.isError);
+  if (BLOCK_RE.test(text)) noteBlocked();
+  else if (text) noteSuccess();
   return result;
 }
 function traceJson(tool: ToolName, payload: unknown): void {

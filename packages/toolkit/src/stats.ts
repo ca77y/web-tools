@@ -9,6 +9,8 @@
 // residential proxy, which is what iProyal bills for. SearXNG and
 // Wayback hits aren't proxied so they don't accrue here.
 
+import { getRotationStats } from './rotation.js';
+
 export type ToolName =
   | 'web_search'
   | 'web_fetch'
@@ -103,5 +105,6 @@ export function getStats() {
         { calls: counts[t], bytes: bytes[t], errors: errors[t] },
       ]),
     ),
+    rotation: getRotationStats(),
   };
 }
