@@ -27,21 +27,12 @@ outgoing:
   request_timeout: 15.0
   max_request_timeout: 20.0
   enable_http2: false
-  # Retry once on engine HTTP errors. On retry SearXNG picks a
-  # different proxy from the round-robin pool below. We keep retries
-  # low (1) on purpose — high retries × bursty workloads burn the
-  # whole pool in seconds because Google CAPTCHAs each new IP on
-  # first contact. Giving up faster preserves pool freshness.
-  retries: 1
+  retries: 2
   pool_connections: 20
   pool_maxsize: 20
   source_ips:
     - 0.0.0.0
   verify: false
-  # entrypoint.py substitutes ${PROXY_URL} at container startup with
-  # the full Webshare residential pool (one `- http://...` per IP)
-  # fetched from /api/v2/proxy/list. If the API call fails we fall
-  # back to a single proxy or no proxy at all.
   proxies:
     all://:
       - ${PROXY_URL}
