@@ -35,11 +35,12 @@ outgoing:
   # proxying is pointless (the exit IP is the proxy's) and degrades requests.
   retries: 3
   pool_connections: 20
-  # pool_maxsize -> httpx max_keepalive_connections. MUST be 0: with keep-alive,
-  # a retry reuses the same proxy tunnel = same (possibly burned) exit IP, so
-  # retry-on-/sorry/ never escapes a bad IP. 0 forces a fresh connection — and
-  # the rotating proxy a fresh exit IP — on every request AND every retry.
-  pool_maxsize: 0
+  # Keep-alive ON (pool_maxsize>0). Tested pool_maxsize:0 to force per-retry IP
+  # rotation past burned IPs, but establishing a fresh residential tunnel per
+  # request is slow enough to blow the 15s timeout under concurrent load —
+  # reliability dropped (3/12 vs 7/10). Reused warm tunnels are faster; we lean
+  # on US-geo (~2/3 clean on first connect) instead of per-retry rotation.
+  pool_maxsize: 20
   verify: false
   proxies:
     all://:
