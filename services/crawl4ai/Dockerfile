@@ -13,4 +13,13 @@
 # Entrypoint, port 11235, auth/Redis env handling are all inherited unchanged.
 FROM unclecode/crawl4ai:0.9.1
 
-RUN playwright install chromium chromium-headless-shell
+# Install the browsers into the exact cache dir the runtime resolves. The
+# server runs as `appuser` and looks in $HOME/.cache/ms-playwright, so pin
+# PLAYWRIGHT_BROWSERS_PATH there (a build-only `playwright install` as the
+# default user landed them elsewhere and the launch still failed). Install as
+# root, then hand ownership back to appuser so it can read them at runtime.
+ENV PLAYWRIGHT_BROWSERS_PATH=/home/appuser/.cache/ms-playwright
+USER root
+RUN playwright install chromium chromium-headless-shell \
+    && chown -R appuser /home/appuser/.cache
+USER appuser
