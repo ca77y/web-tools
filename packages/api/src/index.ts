@@ -1,8 +1,18 @@
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express, { Request, Response } from 'express';
 import { Config, getStats, tools } from '@web-tools/toolkit';
 import { createServer } from './mcp.js';
 import { toolHandler } from './handler.js';
+
+// Constant-time API key check. Hash both sides to fixed-length digests so the
+// compare never leaks length and timingSafeEqual can't throw on mismatch.
+const keyMatches = (provided: string | undefined, expected: string): boolean => {
+  if (!provided) return false;
+  const a = createHash('sha256').update(provided).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
+};
 
 const log = (...args: unknown[]) => {
   process.stderr.write(
@@ -24,7 +34,7 @@ app.use((req: Request, res: Response, next) => {
     req.headers.authorization?.replace(/^Bearer\s+/i, '') ||
     (req.query.api_key as string);
 
-  if (provided !== Config.apiKey) {
+  if (!keyMatches(provided, Config.apiKey)) {
     res.status(403).json({
       error: 'forbidden',
       error_description: 'Invalid or missing API key',
