@@ -112,11 +112,11 @@ describe('CLI transport reporting - search command', () => {
 
     assert.deepEqual(exitCodes, [1]);
     assert.ok(
-      stderr.some((line) => line.startsWith('Error:')),
+      stderr.some(line => line.startsWith('Error:')),
       'expected an "Error: ..." line on stderr',
     );
     assert.ok(
-      !stdout.some((line) => line.includes('No results found.')),
+      !stdout.some(line => line.includes('No results found.')),
       'must not print "No results found." on a total failure',
     );
   });
@@ -128,6 +128,6 @@ describe('CLI transport reporting - search command', () => {
 
     assert.deepEqual(exitCodes, []);
     assert.deepEqual(stderr, []);
-    assert.ok(stdout.some((line) => line.includes('No results found.')));
+    assert.ok(stdout.some(line => line.includes('No results found.')));
   });
 });

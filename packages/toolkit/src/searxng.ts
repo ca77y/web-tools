@@ -107,7 +107,11 @@ async function fetchSearXNG(
   let outcome: FetchOutcome;
 
   try {
-    const { url: baseUrl, engines: defaultEngines, categories } = Config.searxng;
+    const {
+      url: baseUrl,
+      engines: defaultEngines,
+      categories,
+    } = Config.searxng;
     const params = new URLSearchParams({ q: query, format: 'json' });
 
     const engines = options.engines || defaultEngines;
@@ -120,7 +124,10 @@ async function fetchSearXNG(
     });
 
     if (!response.ok) {
-      outcome = { kind: 'failed', reason: { cause: 'http_status', status: response.status } };
+      outcome = {
+        kind: 'failed',
+        reason: { cause: 'http_status', status: response.status },
+      };
       logOutcome(attempt, outcome);
       return outcome;
     }
@@ -140,7 +147,9 @@ async function fetchSearXNG(
       return outcome;
     }
 
-    const valid = (body.results as SearXNGResult[]).filter((r) => r && r.title && r.url);
+    const valid = (body.results as SearXNGResult[]).filter(
+      r => r && r.title && r.url,
+    );
 
     if (valid.length === 0) {
       // Zero valid results. Distinguish "SearXNG answered but every engine
@@ -164,21 +173,29 @@ async function fetchSearXNG(
       // and this signal cannot be verified — per the defensive principle
       // above, an unverifiable signal must never turn a genuine empty into
       // a failed, so it falls back to `empty`.
-      const unresponsiveEngines = extractUnresponsiveEngines(body.unresponsive_engines);
+      const unresponsiveEngines = extractUnresponsiveEngines(
+        body.unresponsive_engines,
+      );
       const requestedEngines = engines
         ? engines
             .split(',')
-            .map((e) => e.trim().toLowerCase())
+            .map(e => e.trim().toLowerCase())
             .filter(Boolean)
         : [];
-      const unresponsiveSet = new Set(unresponsiveEngines.map((e) => e.toLowerCase()));
+      const unresponsiveSet = new Set(
+        unresponsiveEngines.map(e => e.toLowerCase()),
+      );
       const allRequestedUnresponsive =
-        requestedEngines.length > 0 && requestedEngines.every((e) => unresponsiveSet.has(e));
+        requestedEngines.length > 0 &&
+        requestedEngines.every(e => unresponsiveSet.has(e));
 
       if (allRequestedUnresponsive) {
         outcome = {
           kind: 'failed',
-          reason: { cause: 'all_engines_unresponsive', engines: unresponsiveEngines },
+          reason: {
+            cause: 'all_engines_unresponsive',
+            engines: unresponsiveEngines,
+          },
         };
       } else {
         outcome = { kind: 'empty' };
@@ -187,16 +204,24 @@ async function fetchSearXNG(
       return outcome;
     }
 
-    const withContent = valid.filter((r) => r.content?.trim());
-    outcome = { kind: 'ok', results: valid, hasContent: withContent.length > 0 };
+    const withContent = valid.filter(r => r.content?.trim());
+    outcome = {
+      kind: 'ok',
+      results: valid,
+      hasContent: withContent.length > 0,
+    };
     logOutcome(attempt, outcome);
     return outcome;
   } catch (err) {
     // AbortSignal.timeout rejects with a DOMException named 'TimeoutError'.
     // Classify on err.name, not message text, to distinguish a timeout
     // from a generic network/fetch error.
-    const isTimeout = err instanceof DOMException && err.name === 'TimeoutError';
-    outcome = { kind: 'failed', reason: { cause: isTimeout ? 'timeout' : 'network_error' } };
+    const isTimeout =
+      err instanceof DOMException && err.name === 'TimeoutError';
+    outcome = {
+      kind: 'failed',
+      reason: { cause: isTimeout ? 'timeout' : 'network_error' },
+    };
     logOutcome(attempt, outcome);
     return outcome;
   }
@@ -220,7 +245,9 @@ function buildFailureMessage(reasons: SearXNGFailureReason[]): string {
     const key = describeCause(reason);
     counts.set(key, (counts.get(key) ?? 0) + 1);
   }
-  const summary = [...counts.entries()].map(([cause, n]) => `${cause} x${n}`).join(', ');
+  const summary = [...counts.entries()]
+    .map(([cause, n]) => `${cause} x${n}`)
+    .join(', ');
   return `SearXNG search failed: all ${reasons.length} attempt(s) failed (${summary})`;
 }
 
@@ -310,13 +337,15 @@ export async function searchSearXNG(
 
 /** Yields promises in the order they resolve (like Promise.race but iterative). */
 function raceAll(promises: Promise<FetchOutcome>[]): Promise<FetchOutcome>[] {
-  const results: { resolve: (value: FetchOutcome) => void; promise: Promise<FetchOutcome> }[] =
-    [];
+  const results: {
+    resolve: (value: FetchOutcome) => void;
+    promise: Promise<FetchOutcome>;
+  }[] = [];
   const pending = new Set<Promise<FetchOutcome>>(promises);
 
   for (let i = 0; i < promises.length; i++) {
     let resolve!: (value: FetchOutcome) => void;
-    const promise = new Promise<FetchOutcome>((r) => {
+    const promise = new Promise<FetchOutcome>(r => {
       resolve = r;
     });
     results.push({ resolve, promise });
@@ -325,7 +354,7 @@ function raceAll(promises: Promise<FetchOutcome>[]): Promise<FetchOutcome>[] {
   let idx = 0;
   for (const p of promises) {
     p.then(
-      (value) => {
+      value => {
         if (pending.delete(p)) {
           results[idx++]!.resolve(value);
         }
@@ -336,11 +365,14 @@ function raceAll(promises: Promise<FetchOutcome>[]): Promise<FetchOutcome>[] {
         // (the previous `null as T`), so an unexpected throw can never be
         // silently counted as a non-failure.
         if (pending.delete(p)) {
-          results[idx++]!.resolve({ kind: 'failed', reason: { cause: 'network_error' } });
+          results[idx++]!.resolve({
+            kind: 'failed',
+            reason: { cause: 'network_error' },
+          });
         }
       },
     );
   }
 
-  return results.map((r) => r.promise);
+  return results.map(r => r.promise);
 }

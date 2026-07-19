@@ -8,7 +8,6 @@
  */
 import assert from 'node:assert/strict';
 import { afterEach, describe, test } from 'node:test';
-
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
@@ -32,12 +31,22 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-async function connectedClient(): Promise<{ client: Client; close: () => Promise<void> }> {
+async function connectedClient(): Promise<{
+  client: Client;
+  close: () => Promise<void>;
+}> {
   const server = createServer();
-  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
-  const client = new Client({ name: 'test-client', version: '1.0.0' }, { capabilities: {} });
+  const [clientTransport, serverTransport] =
+    InMemoryTransport.createLinkedPair();
+  const client = new Client(
+    { name: 'test-client', version: '1.0.0' },
+    { capabilities: {} },
+  );
 
-  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  await Promise.all([
+    client.connect(clientTransport),
+    server.connect(serverTransport),
+  ]);
 
   return {
     client,
@@ -54,7 +63,10 @@ describe('MCP transport reporting - web_search', () => {
     const { client, close } = await connectedClient();
 
     try {
-      const result = await client.callTool({ name: 'web_search', arguments: { query: 'q' } });
+      const result = await client.callTool({
+        name: 'web_search',
+        arguments: { query: 'q' },
+      });
 
       assert.equal(result.isError, true);
       const content = result.content as Array<{ type: string; text: string }>;
@@ -71,7 +83,10 @@ describe('MCP transport reporting - web_search', () => {
     const { client, close } = await connectedClient();
 
     try {
-      const result = await client.callTool({ name: 'web_search', arguments: { query: 'q' } });
+      const result = await client.callTool({
+        name: 'web_search',
+        arguments: { query: 'q' },
+      });
 
       assert.notEqual(result.isError, true);
       const content = result.content as Array<{ type: string; text: string }>;

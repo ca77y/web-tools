@@ -37,19 +37,21 @@ afterEach(() => {
 });
 
 /** Spins up a real Express server exposing the real toolHandler on a real port. */
-async function withTestServer(fn: (baseUrl: string) => Promise<void>): Promise<void> {
+async function withTestServer(
+  fn: (baseUrl: string) => Promise<void>,
+): Promise<void> {
   const app = express();
   app.use(express.json());
   app.post('/api/v0/web_search', toolHandler('web_search'));
 
   const server = app.listen(0, '127.0.0.1');
-  await new Promise<void>((resolve) => server.once('listening', resolve));
+  await new Promise<void>(resolve => server.once('listening', resolve));
   const address = server.address() as AddressInfo;
 
   try {
     await fn(`http://127.0.0.1:${address.port}`);
   } finally {
-    await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 }
 
@@ -66,7 +68,7 @@ describe('REST transport reporting - POST /api/v0/web_search', () => {
   test('an all-attempts-failed web_search returns HTTP 500 with an error field', async () => {
     stubAllAttempts(() => jsonResponse({}, 503));
 
-    await withTestServer(async (baseUrl) => {
+    await withTestServer(async baseUrl => {
       const res = await postSearch(baseUrl);
 
       assert.equal(res.status, 500);
@@ -78,7 +80,7 @@ describe('REST transport reporting - POST /api/v0/web_search', () => {
   test('a genuine empty result returns HTTP 200 with an empty array', async () => {
     stubAllAttempts(() => jsonResponse({ results: [] }));
 
-    await withTestServer(async (baseUrl) => {
+    await withTestServer(async baseUrl => {
       const res = await postSearch(baseUrl);
 
       assert.equal(res.status, 200);
