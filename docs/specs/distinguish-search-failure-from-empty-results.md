@@ -31,7 +31,9 @@ This violates `docs/PRODUCT.md` principle 2 ("Failures are data, not empty array
 
 ### Boundary
 
-All changes to production behavior are confined to `packages/toolkit/src/searxng.ts`, plus a type/error export surfaced through the toolkit's existing entry point. `packages/api` and `packages/cli` are transport adapters and **must not** be modified: they already propagate thrown errors correctly (verified below). MCP and REST continue to share the same handler path.
+All changes to production behavior are confined to `packages/toolkit/src/searxng.ts`, plus a type/error export surfaced through the toolkit's existing entry point. The **production source** of `packages/api` and `packages/cli` must not be modified: they are transport adapters and already propagate thrown errors correctly (verified below). MCP and REST continue to share the same handler path.
+
+Adding *test* files and a `test` script to `packages/api` and `packages/cli` is in scope and expected — that is where the transport scenarios below are executed. Extending test infrastructure into a package is not "modifying the adapter"; changing its runtime behavior is.
 
 ### Outcome classification
 
@@ -92,8 +94,9 @@ Per `docs/ARCHITECTURE.md`, error messages must not expose raw provider response
 **The repository currently has no test runner, no test script, and no test files.** This unit introduces the minimum viable one:
 
 - Use the Node.js 22 built-in `node:test` runner and `node:assert/strict`. **Do not add any new runtime or dev dependency** — the repo's toolchain is deliberately `typescript` + `prettier` only.
-- Write tests in TypeScript alongside the source in `packages/toolkit/src/` (e.g. `searxng.test.ts`), compiled by the package's existing `tsc` build, and execute the compiled output with `node --test`.
-- Add a `test` script to `packages/toolkit/package.json` and a root `test` script that runs it, following the existing script conventions (root scripts delegate via `pnpm --filter`).
+- Write tests in TypeScript alongside the source (e.g. `packages/toolkit/src/searxng.test.ts`), compiled by each package's existing `tsc` build, and execute the compiled output with `node --test`.
+- Add a `test` script to `packages/toolkit/package.json`, and also to `packages/api/package.json` and `packages/cli/package.json` for the transport scenarios, plus a root `test` script that runs them, following the existing script conventions (root scripts delegate via `pnpm --filter`).
+- The transport scenarios are executed against the real adapter code with the toolkit's `web_search` stubbed (or its underlying `fetch` stubbed) to force the total-failure and genuine-empty cases: call the MCP tool registration and the REST `toolHandler` directly, and exercise the CLI command via its exported registration rather than by spawning a process, asserting the documented failure and empty behavior. If a scenario genuinely cannot be executed against a given adapter without changing its production source, say so explicitly in your report rather than silently downgrading it to inspection.
 - Ensure the compiled test files do not break the package's public entry point — `packages/toolkit/src/index.ts` must not export test modules.
 
 Tests stub `globalThis.fetch` to simulate upstream behavior, restoring the original in teardown. This requires **no production seam or dependency injection** — do not add a fetch-injection parameter to `fetchSearXNG` or `searchSearXNG` purely for testability.

@@ -8,10 +8,11 @@
   },
   "scripts": {
     "start": "tsx --env-file=../../.env.local src/index.ts",
-    "build": "tsc",
-    "build:watch": "tsc --watch",
+    "build": "tsc -p tsconfig.build.json",
+    "build:watch": "tsc -p tsconfig.build.json --watch",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsc && API_KEY=test-key SEARXNG_ENGINES= node --test dist/*.test.js"
   },
   "dependencies": {
     "@web-tools/toolkit": "workspace:*",
