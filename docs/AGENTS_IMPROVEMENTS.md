@@ -59,3 +59,11 @@ Add an entry only when a specific pipeline, agent, or skill improvement is disco
 **Observed**: On `distinguish-search-failure-from-empty-results`, the story changed every package's `build` script from `tsc` to `tsc -p tsconfig.build.json` and added the new `tsconfig.build.json` files, but the root `Dockerfile` copies only `packages/*/tsconfig.json` into the builder stage. `pnpm build` and `pnpm typecheck` — the story's only stated Validation scenario — both pass locally, while `docker build` fails with `error TS5058: The specified path does not exist: 'tsconfig.build.json'`. The spec's Validation requirement names only the two root scripts, so nothing in the story's definition of done could have caught a broken production image.
 
 **Suggested change**: when a story touches a package's `build` script, its `tsconfig*`, or any file the `Dockerfile` copies by name, require a Validation scenario that builds the image (`docker build .` / `docker compose build`) rather than only the root `build`/`typecheck` scripts. The spec author should add that scenario, and the reviewer should treat a build-script change with an unchanged `Dockerfile` as a finding by default.
+
+### Root CLAUDE.md and AGENTS.md keep independent copies of the Validation command list
+
+**Area**: flow
+
+**Observed**: `CLAUDE.md` states "Follow the complete repository rules in `AGENTS.md`" yet still carries its own `## Validation` list (`Build: pnpm build`, `Type-check: pnpm typecheck`), duplicating rather than deferring to `AGENTS.md`'s `## Validation` section. On `distinguish-search-failure-from-empty-results`, the writer correctly added `pnpm test` to `AGENTS.md`'s list (per this story's own docs-placement rule) but had no instruction to touch the mirrored list in `CLAUDE.md`, which is checked into the repo and now understates the validation command set relative to the file it says to defer to.
+
+**Suggested change**: either delete the duplicated `## Validation` list from `CLAUDE.md` and rely on its existing pointer to `AGENTS.md`, or add an explicit rule that any edit to `AGENTS.md`'s `## Validation` section must be mirrored in `CLAUDE.md`'s. Leaving both as independently-maintained copies will keep drifting on every future validation-command change.
