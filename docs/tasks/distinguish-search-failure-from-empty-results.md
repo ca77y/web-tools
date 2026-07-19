@@ -5,7 +5,7 @@ title: Distinguish search provider failure from genuine empty results
 
 # Distinguish search provider failure from genuine empty results
 
-- [/] Distinguish search provider failure from genuine empty results #bug 🔺 🆔 distinguish-search-failure-from-empty-results
+- [?] Distinguish search provider failure from genuine empty results #bug 🔺 🆔 distinguish-search-failure-from-empty-results
   - Phase: Phase 1 - Reliable Core
   - **Problem**: `web_search` returns an empty array both when SearXNG legitimately has no matches and when every SearXNG request fails. A total search outage is indistinguishable from a valid zero-match search. This contradicts [`../PRODUCT.md`](../PRODUCT.md) principle 2 ("Failures are data, not empty arrays"), the product promise that failures must not "masquerade as empty success", and [`../ARCHITECTURE.md`](../ARCHITECTURE.md) which states SearXNG-facing code "is responsible for distinguishing valid no-result responses from upstream failure".
   - **Evidence (verified against `packages/toolkit/src/searxng.ts` at commit `04c4e1a`)**:
