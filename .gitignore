@@ -49,4 +49,10 @@ bun.lockb
 .obsidian/plugins/task-board/task-board-logs.log
 
 # Benchmarks
-/benchmarksservices/searxng/__pycache__/
+/benchmarks
+
+# Python bytecode
+services/searxng/__pycache__/
+
+# Story worktrees
+.worktrees/

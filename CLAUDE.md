@@ -1,6 +1,6 @@
 # Web Tools
 
-A self-hosted web toolkit exposing search, browser-grade extraction, screenshots, PDFs, JavaScript execution, crawling, Wayback access, and process-local usage statistics through MCP, REST, and a CLI. Follow the complete repository rules in [`AGENTS.md`](./AGENTS.md).
+A self-hosted web toolkit exposing search, browser-grade extraction, screenshots, PDFs, JavaScript execution, crawling, Wayback access, and process-local usage statistics through MCP, REST, and a CLI. This file carries the complete repository rules; follow the nearest scoped `CLAUDE.md` for directory-specific rules.
 
 ## Product Context
 
@@ -19,6 +19,8 @@ library/         # Markdown research wiki: raw sources, synthesis, and metadata
 
 ## Architecture Rules
 
+- Make the smallest correct change. Add tests for changed behavior; never weaken checks to make a change pass.
+- Preserve package boundaries and the four-service deployment model documented in `docs/ARCHITECTURE.md`.
 - Keep tool schemas, provider clients, implementations, and the registry in `packages/toolkit`.
 - Keep `packages/api` and `packages/cli` as transport adapters; do not duplicate toolkit behavior.
 - Treat `packages/toolkit/src/tools.ts` as the authoritative nine-tool registry.
@@ -44,12 +46,16 @@ Every `library/` lookup, ingest, synthesis, index/taxonomy/log update, or audit 
 
 ## Validation
 
-- Build: `pnpm build`
-- Type-check: `pnpm typecheck`
-- Type-check individual packages through their existing build scripts.
+- Build all packages: `pnpm build`
+- Type-check all packages: `pnpm typecheck`
+- Run all tests: `pnpm test` (Node's built-in `node:test` runner; per-package `pnpm --filter <pkg> test`)
+- Format TypeScript: `pnpm format`
+- Run package-specific checks for isolated changes, but run the root build before declaring cross-package work complete.
 - Keep code and documentation changes scoped; do not weaken checks to make them pass.
 
 ## Git
 
-- Use Conventional Commits.
+- Use Conventional Commits and keep commits scoped to one coherent change.
 - Never branch, commit, push, or open a pull request unless explicitly asked.
+- Never discard unrelated worktree changes.
+- Create story worktrees under `.worktrees/<slug>/`, which is gitignored so the root checkout stays clean for the board.

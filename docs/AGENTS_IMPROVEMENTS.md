@@ -4,14 +4,6 @@ Concrete proposals for improving the agent workflow used in this repository.
 
 Add an entry only when a specific pipeline, agent, or skill improvement is discovered. Check for an existing equivalent entry first. Product and implementation work does not belong here.
 
-### Define the repository's worktree directory in project context
-
-**Area**: flow
-
-**Observed**: The lead is instructed to create story worktrees "under the repository's worktree directory per project context", but no such directory is defined anywhere in `CLAUDE.md`, `AGENTS.md`, `docs/CLAUDE.md`, or `.gitignore`. The lead has to invent a location, and the obvious in-repo choice (`.worktrees/`) is not gitignored, so it would show up as untracked noise in the root checkout that the Obsidian board scans. This forces an undocumented, per-run judgement call about where isolated work lives.
-
-**Suggested change**: name the worktree directory explicitly in `AGENTS.md` (or `CLAUDE.md`) and, if it lives inside the repository, add it to `.gitignore` in the same change, so every story uses the same location and the root checkout stays clean.
-
 ### Flag cross-story test-infrastructure races in the Coordination section
 
 **Area**: flow
@@ -44,14 +36,6 @@ Add an entry only when a specific pipeline, agent, or skill improvement is disco
 
 **Suggested change**: either give `/simplify` a documented fallback ("if `general-purpose` is unavailable, perform the four angles directly against the diff instead of dispatching agents") or have it detect the caller's available agent roster and substitute an equivalent named agent (e.g. `Explore` for read-only angles) when `general-purpose` is off-limits.
 
-### The `scribe`'s mandatory `auditor` gate has no reachable auditor
-
-**Area**: agent:scribe
-
-**Observed**: The `scribe`'s instructions make the `auditor` subagent an absolute, non-substitutable gate — it may not self-audit, and a no-result must stop the run and escalate. But the `scribe`'s tool roster contains no agent-spawn tool at all; the only agent-directed tool is `SendMessage`, which requires an already-running teammate. On `distinguish-search-failure-from-empty-results`, `SendMessage` to `auditor` returned `No agent named 'auditor' is reachable`, so the required gate was unsatisfiable by construction and the doc pass had to stop with the spec left in `docs/specs/`. This is not the same as the `/simplify` dispatch gap above: there the skill merely lacked a fallback for an optional optimization, here a hard gate the agent is forbidden to bypass cannot be invoked at all.
-
-**Suggested change**: either give the `scribe` a dispatch tool that can launch the `auditor`, or have the `lead` spawn the `auditor` as a named teammate before invoking the `scribe` and pass its name in the task. Failing both, the `scribe`'s instructions should state explicitly what a run may still deliver when no auditor exists (e.g. commit the doc edits, keep the spec, report docs-incomplete) so the outcome is a defined path rather than an escalation every time.
-
 ### Validation gates must cover the container build when build scripts change
 
 **Area**: flow
@@ -60,13 +44,6 @@ Add an entry only when a specific pipeline, agent, or skill improvement is disco
 
 **Suggested change**: when a story touches a package's `build` script, its `tsconfig*`, or any file the `Dockerfile` copies by name, require a Validation scenario that builds the image (`docker build .` / `docker compose build`) rather than only the root `build`/`typecheck` scripts. The spec author should add that scenario, and the reviewer should treat a build-script change with an unchanged `Dockerfile` as a finding by default.
 
-### Root CLAUDE.md and AGENTS.md keep independent copies of the Validation command list
-
-**Area**: flow
-
-**Observed**: `CLAUDE.md` states "Follow the complete repository rules in `AGENTS.md`" yet still carries its own `## Validation` list (`Build: pnpm build`, `Type-check: pnpm typecheck`), duplicating rather than deferring to `AGENTS.md`'s `## Validation` section. On `distinguish-search-failure-from-empty-results`, the writer correctly added `pnpm test` to `AGENTS.md`'s list (per this story's own docs-placement rule) but had no instruction to touch the mirrored list in `CLAUDE.md`, which is checked into the repo and now understates the validation command set relative to the file it says to defer to.
-
-**Suggested change**: either delete the duplicated `## Validation` list from `CLAUDE.md` and rely on its existing pointer to `AGENTS.md`, or add an explicit rule that any edit to `AGENTS.md`'s `## Validation` section must be mirrored in `CLAUDE.md`'s. Leaving both as independently-maintained copies will keep drifting on every future validation-command change.
 ### Card shaping must check RAILWAY.md before asserting "deployed" facts
 
 **Area**: flow (story-shaping from repo analysis)

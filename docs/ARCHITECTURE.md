@@ -223,7 +223,7 @@ Tests run on the Node.js 22 built-in `node:test` runner with `node:assert/strict
 - Provider behavior is simulated by stubbing `globalThis.fetch` and restoring it in teardown. Production code carries no dependency-injection seam that exists only for tests.
 - Transport scenarios exercise the real MCP registration, the REST tool handler, and the CLI command registration in-process rather than by spawning a server or a subprocess.
 
-Run all tests from the repository root with `pnpm test`; see [`../AGENTS.md`](../AGENTS.md) for the full validation command set.
+Run all tests from the repository root with `pnpm test`; see [`../CLAUDE.md`](../CLAUDE.md) for the full validation command set.
 
 ## Deployment Model
 
