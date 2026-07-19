@@ -14,7 +14,7 @@ The pnpm workspace contains the framework-agnostic toolkit and two interface ada
 
 ## Engineering
 
-- Use Node.js 22 and pnpm.
+- Use Node.js 24 and pnpm.
 - Keep ESM imports explicit with `.js` suffixes in TypeScript source.
 - Validate untrusted input with the registered Zod schema at interface boundaries. Existing REST and CLI validation gaps are documented debt, not a second contract.
 - Return actionable errors with safe upstream context. Do not turn provider failures into successful empty results.

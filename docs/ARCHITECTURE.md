@@ -58,7 +58,7 @@ The CLI package maps Commander commands and flags to toolkit inputs. It executes
 
 ### Web Tools
 
-The Node.js 22 application hosts MCP and REST. It is stateless except for process-local usage counters. A restart creates a new statistics epoch identified by `started_at`.
+The Node.js 24 application hosts MCP and REST. It is stateless except for process-local usage counters. A restart creates a new statistics epoch identified by `started_at`.
 
 ### Crawl4AI
 
@@ -215,7 +215,7 @@ Transports surface the thrown error without adding search-specific behavior: MCP
 
 ## Testing
 
-Tests run on the Node.js 22 built-in `node:test` runner with `node:assert/strict`. No test framework, runner, or assertion library is a dependency; the toolchain remains `typescript` plus `prettier`.
+Tests run on the Node.js 24 built-in `node:test` runner with `node:assert/strict`. No test framework, runner, or assertion library is a dependency; the toolchain remains `typescript` plus `prettier`.
 
 - Tests are TypeScript, written alongside the source they cover as `*.test.ts`.
 - Each package carries a `tsconfig.test.json` that compiles source and tests into `dist-test/`, and a `tsconfig.build.json` that excludes `*.test.ts` so test code never reaches the shipped `dist/` or the production image. The root `Dockerfile` copies the build tsconfigs for that reason.
@@ -238,7 +238,7 @@ The service graph should remain explicit:
 
 ## Technology Choices
 
-- **Node.js 22 and TypeScript**: one language and type system across toolkit and adapters.
+- **Node.js 24 and TypeScript**: one language and type system across toolkit and adapters.
 - **pnpm workspaces**: explicit local package boundaries and deterministic monorepo builds.
 - **Zod**: runtime validation aligned with inferred TypeScript types.
 - **Express 5**: small HTTP adaptation layer for MCP, REST, health, and statistics.

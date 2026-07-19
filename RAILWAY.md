@@ -18,7 +18,7 @@ This template deploys a complete self-hosted web toolkit as four services on Rai
 - **Redis** (7-alpine): In-memory cache used by SearXNG for rate limiting and result caching
 - **SearXNG**: Privacy-respecting metasearch engine that aggregates results from Google, Brave, DuckDuckGo, and more. Builds from `services/searxng/Dockerfile` with optional `PROXY_URL` support for outgoing requests
 - **Crawl4AI**: Headless browser service for page fetching, content extraction, screenshots, PDFs, and JavaScript execution
-- **Web Tools Server** (Node.js 22): The HTTP server exposing MCP and REST API endpoints. Builds from the root `Dockerfile`
+- **Web Tools Server** (Node.js 24): The HTTP server exposing MCP and REST API endpoints. Builds from the root `Dockerfile`
 
 ### Deployment Dependencies
 
