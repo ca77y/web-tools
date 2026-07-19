@@ -264,15 +264,17 @@ describe('searchSearXNG - all-engines-failed detection (unresponsive_engines)', 
     assert.deepEqual(data, []);
   });
 
-  test('non-empty unresponsive_engines with no explicit engines requested cannot be verified, stays empty', async () => {
+  test('non-empty unresponsive_engines with no explicit engine list requested classifies failed (default-deployment outage detection)', async () => {
     // No `engines` option is passed below, and `Config` is read once at
     // module load, so this test's premise depends on SEARXNG_ENGINES being
     // unset/empty in the environment `pnpm test` runs in (pinned via
     // `SEARXNG_ENGINES=` in this package's `test` script alongside
     // `API_KEY=test-key`, precisely so a developer's ambient shell env
     // can't flip this test red on correct code). With no requested-engine
-    // roster known, the signal is unverifiable and must not promote to
-    // `failed`.
+    // roster known, the full "every requested engine unresponsive" rule
+    // can never fire, so per the amended spec any non-empty
+    // unresponsive_engines is treated as sufficient evidence of failure —
+    // this is the exact shape of the Railway 2026-07-17/18 incident.
     stubFetch([
       () =>
         jsonResponse({
@@ -291,10 +293,20 @@ describe('searchSearXNG - all-engines-failed detection (unresponsive_engines)', 
         }),
     ]);
 
-    const { data } = await searchSearXNG('q');
-
-    assert.deepEqual(data, []);
+    await assert.rejects(searchSearXNG('q'), (err: unknown) => {
+      const spErr = assertSearchProviderError(err);
+      for (const reason of spErr.reasons) {
+        assert.equal(reason.cause, 'all_engines_unresponsive');
+      }
+      return true;
+    });
   });
+
+  // The spec's "Partial engine failure with an explicit engine list"
+  // scenario (empty, not failed, when only some requested engines are
+  // unresponsive) is already covered above by "only SOME requested
+  // engines unresponsive (others simply matched nothing) stays empty, not
+  // failed" — no separate test needed.
 
   test('missing unresponsive_engines field falls back to empty classification without error', async () => {
     stubFetch([

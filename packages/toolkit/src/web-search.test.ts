@@ -24,6 +24,7 @@ import { afterEach, describe, test } from 'node:test';
 import { functionMap, web_search } from './functions.js';
 import { SearchProviderError as SearchProviderErrorFromEntry } from './index.js';
 import { SearchProviderError } from './searxng.js';
+import { getStats } from './stats.js';
 
 const originalFetch = globalThis.fetch;
 const originalStderrWrite = process.stderr.write.bind(process.stderr);
@@ -141,6 +142,41 @@ describe('web_search tool entrypoint - error and success propagation', () => {
     stubFetch([() => jsonResponse({ results: [] })]);
 
     assert.deepEqual(await handler({ query: 'q' }), []);
+  });
+
+  test('a total failure is still recorded in /stats before the error is rethrown', async () => {
+    const before = getStats();
+    const webSearchBefore = before.by_tool.web_search;
+    assert.ok(webSearchBefore, 'getStats must report a web_search entry');
+    const callsBefore = webSearchBefore.calls;
+    const errorsBefore = webSearchBefore.errors;
+
+    stubFetch([
+      () => jsonResponse({}, 503),
+      () => jsonResponse({}, 503),
+      () => jsonResponse({}, 503),
+    ]);
+
+    await assert.rejects(web_search({ query: 'q' }), SearchProviderError);
+
+    const after = getStats();
+    const webSearchAfter = after.by_tool.web_search;
+    assert.ok(webSearchAfter, 'getStats must report a web_search entry');
+    assert.equal(
+      webSearchAfter.calls,
+      callsBefore + 1,
+      'a total failure must still count as a call, not vanish from /stats',
+    );
+    assert.equal(
+      webSearchAfter.errors,
+      errorsBefore + 1,
+      'a total failure must be recorded as an error',
+    );
+    assert.equal(
+      after.total_errors,
+      before.total_errors + 1,
+      'total_errors must reflect the failed search',
+    );
   });
 });
 

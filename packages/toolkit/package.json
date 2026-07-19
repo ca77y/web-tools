@@ -13,9 +13,9 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "build:watch": "tsc -p tsconfig.build.json --watch",
-    "clean": "rm -rf dist",
+    "clean": "rm -rf dist dist-test",
     "typecheck": "tsc --noEmit",
-    "test": "tsc && API_KEY=test-key SEARXNG_ENGINES= node --test dist/*.test.js"
+    "test": "tsc -p tsconfig.test.json && API_KEY=test-key SEARXNG_ENGINES= node --test dist-test/*.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

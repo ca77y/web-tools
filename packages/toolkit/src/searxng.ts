@@ -161,21 +161,42 @@ async function fetchSearXNG(
       // The JSON response carries no field listing the full roster of
       // engines that ran (get_json_response in searx/webutils.py returns
       // only query/results/answers/corrections/infoboxes/suggestions/
-      // unresponsive_engines — verified above), so "every engine that ran
-      // is unresponsive" is only decidable against the engine set this
-      // attempt actually requested. A response can legitimately have zero
-      // results with only SOME engines listed unresponsive — the other,
-      // responsive engines simply matched nothing, which is a genuine
-      // empty, not a failure. Only when every one of the requested engines
-      // appears in unresponsive_engines is the zero-result count fully
-      // explained by failure. When no explicit engine list was requested
-      // (SearXNG's own default set applies), the roster is unknown to us
-      // and this signal cannot be verified — per the defensive principle
-      // above, an unverifiable signal must never turn a genuine empty into
-      // a failed, so it falls back to `empty`.
+      // unresponsive_engines — verified above), so when an explicit engine
+      // list WAS requested, "every engine that ran is unresponsive" is
+      // decided against that requested set: a response can legitimately
+      // have zero results with only SOME requested engines listed
+      // unresponsive — the other, responsive engines simply matched
+      // nothing, which is a genuine empty, not a failure. Only when every
+      // one of the requested engines appears in unresponsive_engines is
+      // the zero-result count fully explained by failure.
+      //
+      // DELIBERATE TRADE-OFF — do not "simplify" this back: when NO
+      // explicit engine list was requested (neither the `engines` argument
+      // nor SEARXNG_ENGINES is set — the common, default-deployment case,
+      // and precisely the shape of the Railway 2026-07-17/18 incident this
+      // story exists to fix), the full engine roster that ran is unknown
+      // to us, so "every requested engine unresponsive" can never fire and
+      // the exact motivating scenario would be undetectable. We instead
+      // treat ANY non-empty unresponsive_engines as sufficient evidence of
+      // failure in that case: zero results means no engine produced
+      // positive evidence the search actually worked, while a non-empty
+      // unresponsive_engines is concrete evidence that something did
+      // break. Per docs/PRODUCT.md principle 2, a failure silently
+      // reported as an empty success is the more damaging error; a
+      // failure surfaced on an ambiguous no-match (one engine down, others
+      // genuinely found nothing) is recoverable and visible, whereas a
+      // silent empty is neither. We accept that direction of error.
       const unresponsiveEngines = extractUnresponsiveEngines(
         body.unresponsive_engines,
       );
+      // Exact-string match (case-insensitive) between the requested
+      // engines list and the names SearXNG reports in
+      // unresponsive_engines. This does not resolve engine aliases (e.g.
+      // "go" vs "google"), typos, or engines disabled server-side, so
+      // those never appear in unresponsive_engines and this detection
+      // silently does not fire for them — it fails safe (falls back to
+      // `empty`), never unsafe. Do not build alias resolution for this;
+      // it's an accepted limitation of a best-effort signal.
       const requestedEngines = engines
         ? engines
             .split(',')
@@ -186,8 +207,9 @@ async function fetchSearXNG(
         unresponsiveEngines.map(e => e.toLowerCase()),
       );
       const allRequestedUnresponsive =
-        requestedEngines.length > 0 &&
-        requestedEngines.every(e => unresponsiveSet.has(e));
+        requestedEngines.length > 0
+          ? requestedEngines.every(e => unresponsiveSet.has(e))
+          : unresponsiveEngines.length > 0;
 
       if (allRequestedUnresponsive) {
         outcome = {
