@@ -15,9 +15,9 @@ COPY packages/api/package.json packages/api/
 RUN pnpm install --frozen-lockfile
 
 # Copy source code
-COPY packages/toolkit/tsconfig.json packages/toolkit/
+COPY packages/toolkit/tsconfig.json packages/toolkit/tsconfig.build.json packages/toolkit/
 COPY packages/toolkit/src/ packages/toolkit/src/
-COPY packages/api/tsconfig.json packages/api/
+COPY packages/api/tsconfig.json packages/api/tsconfig.build.json packages/api/
 COPY packages/api/src/ packages/api/src/
 
 # Build toolkit first, then api

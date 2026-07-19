@@ -43,3 +43,11 @@ Add an entry only when a specific pipeline, agent, or skill improvement is disco
 **Observed**: The `coder` agent runs the story-level simplify pass by invoking `/simplify`, whose Phase 1 instructs launching "4 independent review agents via the Agent tool" using the generic `general-purpose` subagent type. Inside this pipeline the `coder`'s `Agent` tool call failed outright — `general-purpose is not available to this pipeline` — because the fleet restricts the coder to the named `ca77y-engineering:*` agents. The skill has no fallback path, so the step silently cannot run as written and the coder had to perform all four review angles itself by reading the diff and files directly, which works but isn't what the skill specifies and isn't guaranteed to get the same breadth as four independently-primed agents.
 
 **Suggested change**: either give `/simplify` a documented fallback ("if `general-purpose` is unavailable, perform the four angles directly against the diff instead of dispatching agents") or have it detect the caller's available agent roster and substitute an equivalent named agent (e.g. `Explore` for read-only angles) when `general-purpose` is off-limits.
+
+### Validation gates must cover the container build when build scripts change
+
+**Area**: flow
+
+**Observed**: On `distinguish-search-failure-from-empty-results`, the story changed every package's `build` script from `tsc` to `tsc -p tsconfig.build.json` and added the new `tsconfig.build.json` files, but the root `Dockerfile` copies only `packages/*/tsconfig.json` into the builder stage. `pnpm build` and `pnpm typecheck` — the story's only stated Validation scenario — both pass locally, while `docker build` fails with `error TS5058: The specified path does not exist: 'tsconfig.build.json'`. The spec's Validation requirement names only the two root scripts, so nothing in the story's definition of done could have caught a broken production image.
+
+**Suggested change**: when a story touches a package's `build` script, its `tsconfig*`, or any file the `Dockerfile` copies by name, require a Validation scenario that builds the image (`docker build .` / `docker compose build`) rather than only the root `build`/`typecheck` scripts. The spec author should add that scenario, and the reviewer should treat a build-script change with an unchanged `Dockerfile` as a finding by default.

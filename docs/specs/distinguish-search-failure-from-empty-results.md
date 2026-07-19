@@ -58,6 +58,21 @@ SearXNG's JSON response format may expose `unresponsive_engines`. When present a
 
 Parse the field defensively — treat a missing or malformed `unresponsive_engines` as "not reported" rather than an error, so its absence never turns a genuine `empty` into a `failed`.
 
+#### When no explicit engine list was requested
+
+`SEARXNG_ENGINES` is **optional and blank in the default deployment** (`config.ts`, `.env.example`, `README.md`), and the `engines` tool argument is optional, so the common production case requests no explicit engine list. SearXNG's JSON response carries no field enumerating the full engine roster that ran, only `unresponsive_engines`.
+
+Restricting the `failed` classification to "every engine in the explicitly-requested list is unresponsive" therefore makes the detection **unreachable in the default deployment** — which is precisely the configuration of the Railway incident this story exists to fix. That is not acceptable: it satisfies the letter of the acceptance criterion while missing the motivating scenario.
+
+Required behavior when **no** explicit engine list was requested: a response with HTTP 2xx, **zero** valid results, and a **non-empty** `unresponsive_engines` is classified `failed`.
+
+This is a deliberate, documented trade-off. The ambiguous case is a genuine no-match where one engine happened to be unresponsive while others answered normally with zero results — that will now be reported as a failure rather than an empty success. We accept that direction of error because:
+
+- Zero results means no engine produced positive evidence the search actually worked, while a non-empty `unresponsive_engines` is concrete evidence that something did break.
+- `docs/PRODUCT.md` principle 2 makes a failure reported as empty success the more damaging error; a failure surfaced on an ambiguous no-match is recoverable and visible, whereas a silent empty is neither.
+
+Record this trade-off and its reasoning in a code comment so a future reader does not "simplify" it back. When an explicit engine list **is** requested, keep the existing, more precise "every requested engine is unresponsive" rule.
+
 ### Aggregation in `searchSearXNG`
 
 Consume outcomes in resolution order, preserving the **existing selection behavior**: the first `ok` outcome with content wins and short-circuits; otherwise the first `ok` outcome with any results is used. Dedup-by-URL and `limit` truncation are unchanged.
@@ -221,6 +236,16 @@ Because the parallel attempt count is `Config.parallelRequests` (3), a stub must
 
 - **WHEN** SearXNG returns HTTP 200 with zero valid results and reports every engine as unresponsive via `unresponsive_engines`, **and** the deployed image exposes that field
 - **THEN** the attempt is classified `failed` rather than `empty`
+
+#### Scenario: Every engine unresponsive with no explicit engine list requested
+
+- **WHEN** no explicit engine list was requested (neither the `engines` argument nor `SEARXNG_ENGINES` is set) and SearXNG returns HTTP 200 with zero valid results and a non-empty `unresponsive_engines`
+- **THEN** the attempt is classified `failed`, so the default-deployment outage case is detected rather than reported as an empty success
+
+#### Scenario: Partial engine failure with an explicit engine list
+
+- **WHEN** an explicit engine list is requested, SearXNG returns HTTP 200 with zero valid results, and only some of the requested engines appear in `unresponsive_engines`
+- **THEN** the attempt is classified `empty`, because the engines that did run genuinely found nothing
 
 #### Scenario: Field unavailable or unreported
 
