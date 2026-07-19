@@ -1,0 +1,53 @@
+---
+type: story
+title: Bound and recover the shared Crawl4AI MCP client
+---
+
+# Bound and recover the shared Crawl4AI MCP client
+
+- [ ] Bound and recover the shared Crawl4AI MCP client #bug ⏫ 🆔 crawl4ai-mcp-client-timeout-and-recovery
+  - Phase: Phase 1 - Reliable Core
+  - Problem: production Web Tools logged two call-level MCP timeouts against Crawl4AI on 2026-07-18. The shared MCP client has no explicit call timeout, discards its client on failure without closing it, does not retry the failed operation, and can latch a permanently rejected connection promise.
+    - Observed Railway production log lines (Tools service, deployment `377406fe-1e9d-49fe-a403-a84eaac46d23`, commit `423f31b28976cb694881f431a96a46cfcc4b5b30`):
+      - `[2026-07-18T20:55:14.272879053Z] Crawl4AI crawl threw: MCP error -32001: Request timed out`
+      - `[2026-07-18T20:57:35.945134082Z] Crawl4AI crawl threw: MCP error -32001: Request timed out`
+    - MCP error `-32001` is `ErrorCode.RequestTimeout` in `@modelcontextprotocol/sdk` v1.26.0 (`dist/esm/types.js`).
+  - Root cause 1 - timeout budget inversion. `packages/toolkit/src/crawl4ai.ts:46-55` calls `c.callTool({ name, arguments: args })` with no `RequestOptions`, so the SDK applies `DEFAULT_REQUEST_TIMEOUT_MSEC = 60000` (`@modelcontextprotocol/sdk@1.26.0/dist/esm/shared/protocol.js:8`, applied at `protocol.js:704`). But `web_fetch` in `packages/toolkit/src/functions.ts:159-167` asks Crawl4AI for a far larger budget:
+    - `page_timeout: 120000` plus `delay_before_return_html: 15` (seconds, default) — a worst case of roughly 135s against a 60s client-side deadline.
+    - Any target that legitimately needs more than 60s therefore always fails client-side, even when Crawl4AI would have succeeded. Both logged timeouts are consistent with this.
+  - Root cause 2 - client discarded without close (connection/session leak). On any thrown call error `crawl4ai.ts:50-54` runs:
+    - `client = null; connecting = null; throw err;`
+    - It never calls `c.close()`, so the underlying `SSEClientTransport` EventSource stays open to Crawl4AI and the server-side MCP session is never released. Every timeout leaks one SSE connection for the lifetime of the process.
+    - The SDK timeout path only cancels the in-flight request (`protocol.js:705`); it does not close the transport, so the discarded client is still live.
+  - Root cause 3 - rejected `connecting` promise can latch permanently. `crawl4ai.ts:12-43` assigns `connecting` to an async IIFE and clears it only on success (`crawl4ai.ts:39`) or inside `transport.onerror` / `transport.onclose` (`crawl4ai.ts:26-35`). There is no `catch` around the IIFE.
+    - Correction to a common misreading: for a *transport-level* SSE connection failure the SDK does invoke `onerror` (`@modelcontextprotocol/sdk@1.26.0/dist/esm/client/sse.js:94-95` calls `reject(error)` then `this.onerror?.(error)`), so that path does self-heal.
+    - The unhandled path is a failure *after* `transport.start()` succeeds — the `initialize` handshake timing out, returning a protocol error, or being rejected during auth. `c.connect(transport)` rejects, no transport callback fires, and `connecting` retains a rejected promise. `getClient()` at `crawl4ai.ts:10` then returns that same rejected promise to every future caller, wedging all five Crawl4AI tools until the process restarts.
+  - Root cause 4 - no retry of the failed operation. After clearing state, `call()` rethrows. The next call reconnects, but the operation that paid the full timeout is surfaced to the user as a hard error with no bounded retry, even though `AGENTS.md`/`docs/ARCHITECTURE.md` (Failure Model) permit bounded retries for safe operations.
+  - Scope:
+    - Rework `packages/toolkit/src/crawl4ai.ts` client lifecycle: explicit per-call timeout, close-on-discard, guarded `connecting` promise, and one bounded reconnect-and-retry for the connection-level failure class.
+    - Make the MCP call timeout configurable and derive it so it is strictly greater than the crawl budget the toolkit itself requests. Add the setting to `packages/toolkit/src/config.ts` alongside the existing `requestTimeout` field.
+    - Out of scope: Crawl4AI service-side configuration, browser rotation behavior (`packages/toolkit/src/rotation.ts`), SearXNG behavior, and health-check changes.
+    - Also out of scope, owned by neighbouring cards on this board — coordinate, do not re-implement:
+      - Per-call correlation logging (request ID, target host, duration, outcome) is owned by [`request-correlation-logging`](./request-correlation-logging.md). This story should not add its own ad-hoc log format; if it needs to log, follow that story's format once it has landed.
+      - Crawl-semantics retries (navigation timeout, HTTP 429, HTTP 503) are owned by [`retry-transient-crawl-failures`](./retry-transient-crawl-failures.md). **Latency-budget interaction:** that card retries at the crawl layer while this one retries at the connection layer. The two triggers are distinct, but they can compound. Whichever card lands second must state the combined worst-case latency, and the connection-level retry here must not multiply with a crawl-level retry on the same logical request.
+      - Client-disconnect abort propagation is owned by [`request-lifecycle-abort-propagation`](./request-lifecycle-abort-propagation.md). The explicit `timeout` added here should be compatible with an `AbortSignal` being threaded through later.
+  - Acceptance criteria:
+    - Every `callTool` in `packages/toolkit/src/crawl4ai.ts` passes an explicit `timeout` via the SDK `RequestOptions` argument instead of relying on the 60s SDK default.
+    - The default MCP call timeout exceeds the largest crawl budget the toolkit requests (currently `page_timeout: 120000` + `delay_before_return_html: 15` in `functions.ts:159-167`), and the value is configurable through an environment variable registered in `packages/toolkit/src/config.ts`.
+    - A test proves a `web_fetch` whose upstream takes longer than 60s but less than the configured timeout now succeeds rather than returning `MCP error -32001`.
+    - When a call fails and the shared client is discarded, `close()` is called on the discarded client so no SSE connection or Crawl4AI session is leaked; a test asserts `close()` was invoked.
+    - A rejected `c.connect(transport)` that fires no transport callback (simulating an `initialize`-phase failure) does not leave a rejected promise in `connecting`; a test asserts a subsequent `getClient()` attempts a fresh connection and can succeed.
+    - A connection-level failure is retried at most once with a fresh client before the error is surfaced; the retry count is bounded and a test asserts exactly one retry.
+    - A timeout of the upstream operation itself is not retried (it is not a safe repeat), and a test asserts no retry occurs for `ErrorCode.RequestTimeout`.
+    - Concurrent Crawl4AI calls are unaffected when one of them fails and clears the shared client; a test runs two concurrent calls, fails one, and asserts the other still resolves.
+    - `pnpm build` and `pnpm typecheck` pass.
+  - Reproduction steps:
+    - Timeout inversion: point `CRAWL4AI_URL` at a stub MCP server whose `crawl` tool sleeps 75s, then call `web_fetch`. Current behavior returns `Crawl4AI crawl error: MCP error -32001: Request timed out` after ~60s. Expected: the call completes.
+    - Latched connection: stub a server that accepts the SSE connection but never answers `initialize`. Call any Crawl4AI tool twice. Current behavior: the second call rejects with the identical error from the cached rejected promise without any new connection attempt. Expected: a fresh connection attempt each time.
+    - Leak: stub a `crawl` tool that throws, call it N times, and assert the number of open SSE connections to the stub does not grow with N.
+  - References:
+    - `packages/toolkit/src/crawl4ai.ts` (whole file, 62 lines — shared client, `getClient`, `call`)
+    - `packages/toolkit/src/functions.ts:52-99` (`proxyCrawl4AI` wrapper) and `functions.ts:155-168` (`web_fetch` crawl budget)
+    - `packages/toolkit/src/config.ts` (existing `requestTimeout` / `parallelRequests` constants)
+    - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) - Failure Model: "Retries must be bounded and limited to operations known to be safe. Cancellation and timeout signals should propagate through the toolkit to provider clients where supported."
+    - [`../PRODUCT.md`](../PRODUCT.md) - Phase 1 exit condition: "Crawl and fetch correctly classify upstream status, downloads, binary content, and browser failures."

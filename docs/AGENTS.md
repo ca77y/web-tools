@@ -1,13 +1,12 @@
 # Docs
 
-Engineering documentation for product direction, system design, settled behavior, operational flows, active specs, and story tracking. Human-facing setup remains in the root `README.md`.
+Engineering documentation for product direction, system design, settled behavior, known issues, active specs, and story tracking. Human-facing setup remains in the root `README.md`.
 
 ## Placement
 
 - Keep product intent and roadmap in `PRODUCT.md`.
-- Keep the high-level system model in `ARCHITECTURE.md`.
-- Put focused architecture, deployment, and operational decisions in `designs/`.
-- Put shipped capability contracts in `features/` and end-to-end behavior in `flows/`.
+- Keep the system model, shipped capability contracts, and operational design in `ARCHITECTURE.md`.
+- Record a real problem with no identified fix on our side in `issues/`.
 - Keep temporary implementation contracts in `specs/` and active stories in `tasks/`.
 
 ## Rules

@@ -13,7 +13,7 @@ A self-hosted web toolkit exposing search, browser-grade extraction, screenshots
 ```text
 packages/        # TypeScript toolkit, API server, and CLI
 services/        # SearXNG and Crawl4AI service images/configuration
-docs/            # Designs, features, flows, in-flight specs, and story cards
+docs/            # Product direction, architecture, known issues, in-flight specs, and story cards
 library/         # Markdown research wiki: raw sources, synthesis, and metadata
 ```
 
@@ -28,8 +28,9 @@ library/         # Markdown research wiki: raw sources, synthesis, and metadata
 
 ## Documentation rules
 
-- Product direction belongs in `docs/PRODUCT.md`; user-facing setup belongs in `README.md`; shipped behavior belongs in `docs/features/`.
-- System architecture belongs in `docs/ARCHITECTURE.md`; focused operational design belongs in `docs/designs/`.
+- Product direction belongs in `docs/PRODUCT.md`; user-facing setup belongs in `README.md`.
+- System architecture, shipped behavior, and operational design all belong in `docs/ARCHITECTURE.md`.
+- Problems that are real but have no identified fix on our side belong in `docs/issues/`.
 - In-flight implementation contracts belong in `docs/specs/` and are removed after durable content is folded into the permanent docs.
 - Stories live in `docs/tasks/`, one story per Markdown file and one card per story.
 - Story states are `[ ]` Todo, `[<]` Ready to start, `[/]` In Progress, `[?]` In Review, `[x]` Done, `[X]` Completed, and `[-]` Cancelled. Todo is unrefined; Ready to start is refined and unblocked.

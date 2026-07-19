@@ -13,7 +13,7 @@ The problem, proposed change, user value, and explicit non-goals.
 
 ## Design
 
-Architecture, data flow, dependencies, risks, and alternatives. Link settled design in `docs/designs/` instead of repeating it.
+Architecture, data flow, dependencies, risks, and alternatives. Link settled design in `docs/ARCHITECTURE.md` instead of repeating it.
 
 ## Requirements
 

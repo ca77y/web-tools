@@ -254,6 +254,10 @@
           "minimized": [],
           "maxHeight": "300px",
           "headerUIType": "hor"
+        },
+        "taskCount": {
+          "pending": 27,
+          "completed": 0
         }
       }
     ],
