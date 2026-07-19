@@ -20,3 +20,4 @@ The pnpm workspace contains the framework-agnostic toolkit and two interface ada
 - Return actionable errors with safe upstream context. Do not turn provider failures into successful empty results.
 - Treat usage statistics as process-local estimates that reset on restart, never as durable billing records.
 - Build `toolkit` before packages that consume it.
+- Put tests beside the source as `*.test.ts`; they compile through each package's `tsconfig.test.json` into `dist-test/` and run on Node's built-in `node:test`. Keep `tsconfig.build.json` excluding tests so they stay out of `dist/`, and do not add a test framework dependency.

@@ -44,6 +44,14 @@ Add an entry only when a specific pipeline, agent, or skill improvement is disco
 
 **Suggested change**: either give `/simplify` a documented fallback ("if `general-purpose` is unavailable, perform the four angles directly against the diff instead of dispatching agents") or have it detect the caller's available agent roster and substitute an equivalent named agent (e.g. `Explore` for read-only angles) when `general-purpose` is off-limits.
 
+### The `scribe`'s mandatory `auditor` gate has no reachable auditor
+
+**Area**: agent:scribe
+
+**Observed**: The `scribe`'s instructions make the `auditor` subagent an absolute, non-substitutable gate — it may not self-audit, and a no-result must stop the run and escalate. But the `scribe`'s tool roster contains no agent-spawn tool at all; the only agent-directed tool is `SendMessage`, which requires an already-running teammate. On `distinguish-search-failure-from-empty-results`, `SendMessage` to `auditor` returned `No agent named 'auditor' is reachable`, so the required gate was unsatisfiable by construction and the doc pass had to stop with the spec left in `docs/specs/`. This is not the same as the `/simplify` dispatch gap above: there the skill merely lacked a fallback for an optional optimization, here a hard gate the agent is forbidden to bypass cannot be invoked at all.
+
+**Suggested change**: either give the `scribe` a dispatch tool that can launch the `auditor`, or have the `lead` spawn the `auditor` as a named teammate before invoking the `scribe` and pass its name in the task. Failing both, the `scribe`'s instructions should state explicitly what a run may still deliver when no auditor exists (e.g. commit the doc edits, keep the spec, report docs-incomplete) so the outcome is a defined path rather than an escalation every time.
+
 ### Validation gates must cover the container build when build scripts change
 
 **Area**: flow
