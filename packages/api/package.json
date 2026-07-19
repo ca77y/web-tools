@@ -6,10 +6,11 @@
   "scripts": {
     "start": "tsx --env-file=../../.env.local src/index.ts",
     "serve": "node --env-file=../../.env.local dist/index.js",
-    "build": "tsc",
-    "build:watch": "tsc --watch",
-    "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit"
+    "build": "tsc -p tsconfig.build.json",
+    "build:watch": "tsc -p tsconfig.build.json --watch",
+    "clean": "rm -rf dist dist-test",
+    "typecheck": "tsc --noEmit",
+    "test": "tsc -p tsconfig.test.json && API_KEY=test-key SEARXNG_ENGINES= node --test dist-test/*.test.js"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.1",

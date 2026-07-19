@@ -105,12 +105,25 @@ export async function web_search(params: {
   limit?: number;
   engines?: string;
 }) {
-  const results = await searchSearXNG(params.query, {
-    limit: params.limit ?? 10,
-    engines: params.engines,
-  });
-  traceJson('web_search', results.data);
-  return results.data;
+  try {
+    const results = await searchSearXNG(params.query, {
+      limit: params.limit ?? 10,
+      engines: params.engines,
+    });
+    traceJson('web_search', results.data);
+    return results.data;
+  } catch (error) {
+    // A total SearXNG outage throws (see searxng.ts) instead of returning
+    // an empty array. Before that change, the empty-array return was
+    // always recorded via traceJson, so a total failure was visible in
+    // /stats; a bare rethrow here would make it invisible again. Record
+    // the failed call — mirroring how Crawl4AI failures are recorded via
+    // trace()/isError above — then rethrow unmodified so callers still
+    // see the real error.
+    const message = error instanceof Error ? error.message : String(error);
+    recordCall('web_search', message.length, true);
+    throw error;
+  }
 }
 
 export async function web_fetch(params: Record<string, unknown>): Promise<ToolResult> {

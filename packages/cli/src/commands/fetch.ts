@@ -1,12 +1,20 @@
+import {
+  web_execute_js,
+  web_fetch,
+  web_pdf,
+  web_screenshot,
+} from '@web-tools/toolkit';
 import type { Command } from 'commander';
-import { web_fetch, web_screenshot, web_pdf, web_execute_js } from '@web-tools/toolkit';
 
 export function registerFetchCommand(program: Command) {
   program
     .command('fetch')
     .description('Fetch a URL and return its content as markdown')
     .argument('<url>', 'URL to fetch')
-    .option('-f, --filter <strategy>', 'Content filter: raw, fit, bm25, llm (default: fit)')
+    .option(
+      '-f, --filter <strategy>',
+      'Content filter: raw or fit; bm25/llm currently fall back to fit (default: fit)',
+    )
     .option('-q, --query <query>', 'Query for BM25/LLM filter')
     .action(async (url: string, opts: { filter?: string; query?: string }) => {
       const result = await web_fetch({ url, f: opts.filter, q: opts.query });
@@ -63,7 +71,12 @@ export function registerFetchCommand(program: Command) {
     .command('execute-js')
     .description('Execute JavaScript on a URL')
     .argument('<url>', 'URL to execute scripts on')
-    .option('-s, --script <code>', 'JavaScript snippet to execute (repeatable)', collect, [])
+    .option(
+      '-s, --script <code>',
+      'JavaScript snippet to execute (repeatable)',
+      collect,
+      [],
+    )
     .action(async (url: string, opts: { script: string[] }) => {
       if (opts.script.length === 0) {
         console.error('At least one --script is required');

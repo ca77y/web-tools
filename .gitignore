@@ -29,6 +29,7 @@ coverage
 out/
 build
 dist
+dist-test
 
 
 # Debug
@@ -40,6 +41,12 @@ yarn-error.log*
 .DS_Store
 *.pem
 bun.lockb
+
+# Obsidian local/generated state
+.obsidian/workspace.json
+.obsidian/workspace-mobile.json
+.obsidian/plugins/task-board/tasks.json
+.obsidian/plugins/task-board/task-board-logs.log
 
 # Benchmarks
 /benchmarksservices/searxng/__pycache__/

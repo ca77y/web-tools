@@ -25,7 +25,7 @@ services:
   web_tools:
     build:
       context: .
-      dockerfile: packages/api/Dockerfile
+      dockerfile: Dockerfile
     ports:
       - "3000:3000"
     environment:
