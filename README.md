@@ -1,6 +1,6 @@
 # Web Tools
 
-A self-hosted web toolkit providing eight tools for search, content extraction, and archival. Available as an [MCP](https://modelcontextprotocol.io/) server, REST API, and CLI — powered by [SearXNG](https://github.com/searxng/searxng), [Crawl4AI](https://github.com/unclecode/crawl4ai), and the [Wayback Machine](https://web.archive.org/).
+A self-hosted web toolkit providing nine tools for search, content extraction, archival, and lightweight usage inspection. Available as an [MCP](https://modelcontextprotocol.io/) server, REST API, and CLI — powered by [SearXNG](https://github.com/searxng/searxng), [Crawl4AI](https://github.com/unclecode/crawl4ai), and the [Wayback Machine](https://web.archive.org/).
 
 ## Architecture
 
@@ -24,9 +24,20 @@ The project is structured as a **monorepo** with three packages:
 
 The full stack deploys as **4 services**: Redis, SearXNG, Crawl4AI, and the Web Tools server.
 
+## Project vault
+
+This repository is also a version-controlled [Obsidian](https://obsidian.md/) vault for local planning and research:
+
+- [`docs/`](./docs/README.md) contains durable engineering docs, in-flight specs, and the Markdown story board.
+- [`docs/tasks/`](./docs/tasks/CLAUDE.md) stores one Tasks-format story card per file; open the vendored Task Board plugin for the status-based kanban view.
+- [`docs/_templates/`](./docs/_templates/CLAUDE.md) contains story and spec scaffolds.
+- [`library/`](./library/README.md) is the cited research wiki with raw-source provenance and synthesis.
+
+Open the repository root as the vault. The required Tasks, Task Board, and Templater plugins and the recommended Dataview, Breadcrumbs, and Excalidraw plugins are vendored under `.obsidian/plugins/`.
+
 ## Tools
 
-The server exposes eight tools:
+The server exposes nine tools:
 
 ### `web_search`
 
@@ -51,6 +62,8 @@ Fetch a single URL and return its content as clean markdown via Crawl4AI.
 | `q`       | string (optional) | Query string for BM25/LLM filters                                        |
 
 Returns the page content as markdown.
+
+Current limitation: the implementation distinguishes `raw` from all other filter values. `bm25`, `llm`, their query/provider options, and the `c` caching option are declared by the schema but are not yet applied by the Crawl4AI request path.
 
 ### `web_screenshot`
 
@@ -122,6 +135,12 @@ Retrieve an archived page from the Wayback Machine.
 | `original`  | boolean (optional) | Get original content without Wayback Machine banner (default: false) |
 
 Returns the archived page content.
+
+### `web_usage_stats`
+
+Return process-local tool call counts, approximate proxy bandwidth, and estimated USD cost. The counters reset whenever the Web Tools process restarts; use `started_at` to identify the current statistics epoch. These values are operational estimates, not durable billing records.
+
+This tool accepts no parameters. The same data is available from the authenticated `GET /stats` endpoint.
 
 ## Interfaces
 
