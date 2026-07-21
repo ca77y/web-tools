@@ -30,7 +30,7 @@ afterEach(() => {
 /** Captures every line written to stderr while `fn` runs. */
 async function captureStderr<T>(
   fn: () => Promise<T>,
-): Promise<{ lines: string[]; result: T }> {
+): Promise<{ lines: string[]; raw: string; result: T }> {
   const chunks: string[] = [];
   process.stderr.write = ((chunk: unknown) => {
     chunks.push(String(chunk));
@@ -42,7 +42,8 @@ async function captureStderr<T>(
   } finally {
     process.stderr.write = originalStderrWrite;
   }
-  return { lines: chunks.join('').split('\n').filter(Boolean), result };
+  const raw = chunks.join('');
+  return { lines: raw.split('\n').filter(Boolean), raw, result };
 }
 
 /**
@@ -469,12 +470,7 @@ describe('the shared logger contract holds for an inbound API request', () => {
         globalThis.fetch = (async () =>
           new Response(JSON.stringify({}), { status: 503 })) as typeof fetch;
 
-        const chunks: string[] = [];
-        process.stderr.write = ((chunk: unknown) => {
-          chunks.push(String(chunk));
-          return true;
-        }) as typeof process.stderr.write;
-        try {
+        const { lines, raw } = await captureStderr(async () => {
           await originalFetch(`${baseUrl}/api/v0/web_search`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
@@ -483,11 +479,8 @@ describe('the shared logger contract holds for an inbound API request', () => {
           // The http_request record is emitted on the response's 'finish'
           // event, which can land a tick after the client's promise settles.
           await new Promise(resolve => setTimeout(resolve, 25));
-        } finally {
-          process.stderr.write = originalStderrWrite;
-        }
-        const raw = chunks.join('');
-        captured = { lines: raw.split('\n').filter(Boolean), raw };
+        });
+        captured = { lines, raw };
       },
     );
     assert.ok(captured, 'expected a capture');

@@ -507,17 +507,10 @@ describe('concurrent context-free calls get distinct IDs', () => {
       'https://gamma.example/z',
     ];
 
-    const chunks: string[] = [];
-    process.stderr.write = ((chunk: unknown) => {
-      chunks.push(String(chunk));
-      return true;
-    }) as typeof process.stderr.write;
-    try {
-      await Promise.all(urls.map(url => web_crawl({ urls: [url] })));
-    } finally {
-      process.stderr.write = originalStderrWrite;
-    }
-    const records = parseAll(chunks.join('').split('\n').filter(Boolean));
+    const { lines } = await captureStderr(() =>
+      Promise.all(urls.map(url => web_crawl({ urls: [url] }))),
+    );
+    const records = parseAll(lines);
 
     const toolRecords = records.filter(r => r.operation === 'web_crawl');
     assert.equal(toolRecords.length, 3);
