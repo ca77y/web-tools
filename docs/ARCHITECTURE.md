@@ -45,6 +45,7 @@ The API package adapts HTTP requests to toolkit calls:
 - REST discovery at `GET /api/v0`
 - REST execution at `POST /api/v0/{tool_name}`
 - Unauthenticated liveness response at `GET /health`
+- Authenticated dependency readiness report at `GET /ready`
 - Authenticated process-local statistics at `GET /stats`
 - Transport-level status and error serialization
 
@@ -155,7 +156,7 @@ sequenceDiagram
 
 ## Authentication And Trust
 
-The API reads a bearer token from `Authorization` or an `api_key` query parameter and compares it with the configured key using fixed-length SHA-256 digests and `timingSafeEqual`. `/health` bypasses authentication. MCP, REST discovery, REST tool execution, and `/stats` require authentication.
+The API reads a bearer token from `Authorization` or an `api_key` query parameter and compares it with the configured key using fixed-length SHA-256 digests and `timingSafeEqual`. `/health` bypasses authentication. MCP, REST discovery, REST tool execution, `/ready`, and `/stats` require authentication. `/ready` is authenticated because it exposes internal topology and dependency failure detail; it follows `/stats`, not `/health`.
 
 The API key protects access to the service; it does not make arbitrary target URLs trustworthy. URLs, scripts, crawler configuration, and upstream responses remain untrusted input and must be validated or constrained at their boundary.
 
@@ -209,7 +210,48 @@ Transports surface the thrown error without adding search-specific behavior: MCP
 
 ## Health And Statistics
 
-`GET /health` currently proves that the API process can answer an HTTP request. It does not prove that Crawl4AI, SearXNG, Redis, target websites, or Wayback Machine are healthy.
+Liveness and dependency readiness are two separate endpoints, deliberately. Neither signal can break the other.
+
+### `GET /health` — liveness
+
+`GET /health` is unauthenticated, performs **no network I/O**, and returns HTTP 200 with the body `{"status":"ok"}` whenever the process is alive — including when every dependency is unreachable.
+
+It proves exactly one thing: the API process can accept a connection and answer an HTTP request. It proves **nothing** about Crawl4AI, SearXNG, Redis, target websites, or the Wayback Machine.
+
+**This shallowness is a hard constraint, not an omission.** `/health` is the platform health check path configured on the deployed `Tools` service, used both as a deploy gate and as an ongoing container check. If `/health` ever gained dependency state or network I/O, an upstream outage would return non-2xx from a perfectly healthy container, so the platform would restart-loop healthy containers and would block every deploy for as long as the upstream stayed down — precisely when shipping a fix matters most. `/health` must therefore never acquire a dependency check, and its body must never carry dependency state.
+
+### `GET /ready` — dependency readiness
+
+`GET /ready` is the authenticated dependency probe. It reports per-dependency status plus an aggregate rollup:
+
+```json
+{
+  "status": "degraded",
+  "checked_at": "2026-07-19T12:00:00.000Z",
+  "dependencies": {
+    "searxng":  { "status": "unhealthy", "latency_ms": 3001, "detail": "timeout" },
+    "crawl4ai": { "status": "ok", "latency_ms": 42 }
+  }
+}
+```
+
+- **Always HTTP 200**, even when every dependency is unhealthy. Monitors read dependency state from the body, never from the status code. This keeps degraded state out of status-code space, where a future misconfiguration could wire it to a platform restart trigger.
+- **`/ready` must never be configured as a platform health check path.** It is the counterpart of the `/health` constraint above: pointing a platform check at `/ready` would reintroduce, by configuration, the restart loop the split exists to prevent.
+- **Probes run concurrently and each is bounded by an explicit short timeout** (`PROBE_TIMEOUT_MS`, 3s). This is deliberately not `Config.requestTimeout` (15s), which is a per-search budget: a health probe must answer far faster than a user query. A timeout is a verdict, not an error — `checkReadiness()` never rejects.
+- **Results are cached with a single-flight TTL** (`READINESS_CACHE_TTL_MS`, at most 5s). A burst of concurrent callers triggers one probe round, and upstream request volume is bounded by the TTL rather than by poll rate, so polling `/ready` cannot become a load amplifier against SearXNG or Crawl4AI. A cached response carries the older `checked_at`, which is how a caller sees staleness; there is no separate `cached` flag.
+- **Rollup**: all dependencies `ok` → `ok`; some but not all → `degraded`; none → `unhealthy`.
+- **`detail` is present only when a dependency is `unhealthy`, and is drawn from a closed set**: `timeout`, `network_error`, `protocol_error`, or `http_status:<code>`. It is never free-form upstream text, a URL, a header, or an exception message, so no configured URL, credential, or token can reach the body.
+
+What each probe proves:
+
+- **SearXNG** — one cheap `GET ${SEARXNG_URL}/healthz`, never a real user query. Any response with `status < 500` counts as reachable, including `404`: this is a *reachability* probe, and a `404` still proves the SearXNG HTTP server accepted a connection and answered. The deployed image tracks a rolling tag, so `/healthz` is not a version-pinned contract and treating `404` as unhealthy would report a false outage on an image change. `status >= 500` is `unhealthy` with `http_status:<code>`.
+- **Crawl4AI** — a `tools/list` protocol call over the shared memoised MCP client. This proves MCP connectivity; it does **not** prove that a browser can launch.
+
+So `/ready` proves that SearXNG is reachable and that Crawl4AI answers MCP. It does not prove that a search will return results, that a browser will launch, that a target site is reachable, or that the Wayback Machine is available. Redis is not probed directly — Web Tools has no Redis client, and Redis failure is observable transitively through the SearXNG probe.
+
+Probing a dependency is not free of hazards of its own. See [`issues/eventsource-refused-connection-reconnect-leak.md`](./issues/eventsource-refused-connection-reconnect-leak.md) for the upstream SSE behaviour that makes a *refused* Crawl4AI connection behave completely differently from a clean non-200 response, and why the Crawl4AI probe owns transport teardown rather than merely dereferencing the shared client.
+
+### `GET /stats` — usage counters
 
 `GET /stats` and `web_usage_stats` expose the same process-local counters. They reset on restart and are suitable for lightweight inspection, not durable accounting, billing, or historical monitoring.
 
