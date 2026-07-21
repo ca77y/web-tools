@@ -157,34 +157,53 @@ function withConnectTimeout(
  * (or when readiness.ts's own outer race bound wins the race instead —
  * see readiness.ts). Every other rejection is either a `network_error`
  * (not an `McpError`, so the failure happened before/outside the MCP
- * protocol — a failed `getClient()` connect or a transport-level error) or
- * a `protocol_error` (an `McpError` with some other code, meaning the
- * connection succeeded and the server itself returned a protocol-level
- * error).
+ * protocol) or a `protocol_error` (an `McpError` with some other code,
+ * meaning the connection succeeded and the server itself returned a
+ * protocol-level error).
  *
- * Per the spec's post-integration-review amendment, every failure branch
- * — including `timeout` — calls `resetClient()` to close whatever
- * transport this attempt abandoned. This supersedes an earlier design
- * where a timeout reset nothing: that design existed only because the
- * probe had no way to close what it abandoned, which is no longer true.
- * Left unclosed, a refused connection's transport keeps `eventsource`
- * retrying roughly every 3s forever, and a hung connect's transport keeps
- * `connecting` — and therefore every `call()`-based tool — wedged
- * indefinitely, even after the upstream recovers.
+ * The connect step and the `tools/list` request are handled in two
+ * separate `try`/`catch` blocks — deliberately, not merged — because
+ * `resetClient()` must only run for a failure that happened *while
+ * connecting*:
+ *
+ * - **Connect-step failure or timeout** (the first `catch` below): the
+ *   transport this attempt built, if any, never finished connecting, so
+ *   nothing else can be relying on it. Per the spec's post-integration-
+ *   review amendment, this always calls `resetClient()` to close what the
+ *   attempt abandoned — including on a connect-level timeout, which
+ *   supersedes an earlier design where a timeout reset nothing (that
+ *   design predates `resetClient()`, when the probe had no way to close
+ *   what it abandoned). Left unclosed, a refused connection's transport
+ *   keeps `eventsource` retrying roughly every 3s forever, and a hung
+ *   connect's transport keeps `connecting` — and therefore every
+ *   `call()`-based tool — wedged indefinitely, even after the upstream
+ *   recovers.
+ * - **`tools/list` failure** (the second `catch` below): the connect
+ *   already succeeded, so `c` is a *live* memoised client that `call()`
+ *   and any concurrent tool invocation may also be using right now. A
+ *   slow or protocol-error answer to this one probe request does not mean
+ *   the connection itself is unusable — tearing it down here would let
+ *   `/ready` kill unrelated in-flight `web_crawl` / `web_screenshot` /
+ *   `web_pdf` / `web_execute_js` calls merely because a single probe was
+ *   slow, which is the opposite of what a readiness check should do. So
+ *   this only resets when the rejection isn't an `McpError` at all —
+ *   meaning the failure happened below the MCP protocol layer, i.e. the
+ *   transport itself broke mid-request and is genuinely no longer live.
+ *   An `McpError` (`timeout` or `protocol_error`) leaves shared state
+ *   untouched, matching the pre-amendment behaviour for this step, which
+ *   the amendment never revisited (both of its hazards are about the
+ *   connect step).
  */
 export async function probeCrawl4AI(
   timeoutMs: number,
 ): Promise<DependencyProbeResult> {
   const start = performance.now();
+  const latencyMs = () => Math.max(0, Math.round(performance.now() - start));
+
+  let c: Client;
   try {
-    const c = await withConnectTimeout(getClient(), timeoutMs);
-    await c.listTools(undefined, { timeout: timeoutMs });
-    return {
-      status: 'ok',
-      latency_ms: Math.max(0, Math.round(performance.now() - start)),
-    };
+    c = await withConnectTimeout(getClient(), timeoutMs);
   } catch (err) {
-    const latency_ms = Math.max(0, Math.round(performance.now() - start));
     const detail =
       err instanceof McpError && err.code === ErrorCode.RequestTimeout
         ? 'timeout'
@@ -194,6 +213,27 @@ export async function probeCrawl4AI(
 
     await resetClient();
 
-    return { status: 'unhealthy', latency_ms, detail };
+    return { status: 'unhealthy', latency_ms: latencyMs(), detail };
+  }
+
+  try {
+    await c.listTools(undefined, { timeout: timeoutMs });
+    return { status: 'ok', latency_ms: latencyMs() };
+  } catch (err) {
+    if (err instanceof McpError) {
+      const detail =
+        err.code === ErrorCode.RequestTimeout ? 'timeout' : 'protocol_error';
+      return { status: 'unhealthy', latency_ms: latencyMs(), detail };
+    }
+
+    // Not an McpError: the transport itself broke mid-request, so it is
+    // no longer live — reset, same as a connect-step failure.
+    await resetClient();
+
+    return {
+      status: 'unhealthy',
+      latency_ms: latencyMs(),
+      detail: 'network_error',
+    };
   }
 }

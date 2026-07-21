@@ -36,6 +36,14 @@ Add an entry only when a specific pipeline, agent, or skill improvement is disco
 
 **Suggested change**: give the skill an explicit non-PR target mode — when the target is a working tree or a local commit range, skip the eligibility and `gh`-comment steps, and specify the substitute citation format (absolute file path plus line range) and the substitute delivery (findings returned to the caller). Alternatively, have the pipeline call a review skill written for local diffs and reserve `code-review` for actual pull requests.
 
+### A spec amendment asserts third-party dependency behaviour as fact, and the claim is never re-verified when the fix lands
+
+**Area**: flow (single-unit implementation spec authoring, `docs/specs/`)
+
+**Observed**: the post-integration-review amendment in `docs/specs/health-liveness-readiness-split.md` states as fact that "Closing aborts the EventSource, which both stops the retry loop (hazard 1) and settles a wedged in-flight connect (hazard 2)". The first half is true; the second is not. In `eventsource@3.0.7`, `_onFetchError` skips both the reconnect *and* the `error` event when `err.name === "AbortError"`, and `close()` sets `readyState` to `CLOSED` so a later `scheduleReconnect` returns early — so `SSEClientTransport`'s connect promise, which settles only on that error event or the `endpoint` event, never settles when a hung connect is closed. The claim propagated unchallenged into the fix's commit message ("settles a wedged in-flight connect"). It went unnoticed because the scenario the spec wrote for it asserts the observable outcome (a later probe recovers to `ok`), which holds for a different reason — the shared state was nulled, not because the connect settled. A spec claim about a vendored dependency is load-bearing in exactly the same way a test assertion is, but nothing in the flow requires evidence for it or re-checks it once code exists.
+
+**Suggested change**: when a spec (or a review finding that becomes one) asserts how a third-party dependency behaves, require a `package@version` plus file/line citation for each distinct mechanism claimed, and require the round that verifies the fix to check the cited mechanism itself rather than only the scenario's observable outcome. Where a claim cannot be cited, phrase it as an assumption so the verifying round knows to test it.
+
 ### A production hazard discovered while writing tests gets buried in a test-file comment instead of raised as a finding
 
 **Area**: flow (coder -> lead handoff on a single unit)

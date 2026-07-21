@@ -87,6 +87,9 @@ let mode:
 /** Counts `GET /mcp/sse` hits while `mode === 'refused'`. */
 let refusedConnectAttempts = 0;
 
+/** Counts every successful SSE handshake (a real `SSEServerTransport` created). */
+let successfulConnectAttempts = 0;
+
 const openTransports = new Set<SSEServerTransport>();
 /** `res` objects left hanging by `connect_hangs` mode; cleaned up in `after()`. */
 const hungResponses = new Set<ServerResponse>();
@@ -154,6 +157,7 @@ async function handle(
       res.on('close', () => hungResponses.delete(res));
       return;
     }
+    successfulConnectAttempts++;
     const transport = new SSEServerTransport('/messages', res);
     openTransports.add(transport);
     res.on('close', () => openTransports.delete(transport));
@@ -264,6 +268,64 @@ test('a connected server that never answers tools/list is unhealthy with timeout
   assert.ok(
     elapsed < 3000,
     `probe must honour its own timeoutMs, took ${elapsed}ms`,
+  );
+});
+
+test('a protocol_error on tools/list does not reset the live connection: no new connect attempt follows', async () => {
+  mode = 'protocol_error';
+  successfulConnectAttempts = 0;
+  const probeCrawl4AI = await freshProbe();
+
+  const failed = await probeCrawl4AI(3000);
+  assert.equal(failed.status, 'unhealthy');
+  assert.equal(failed.detail, 'protocol_error');
+  assert.equal(
+    successfulConnectAttempts,
+    1,
+    'the connect itself succeeded; only tools/list returned a protocol error',
+  );
+
+  // The connect succeeded, so `client` is a live, shared transport that
+  // `call()` and concurrent tool invocations may also be using. A single
+  // probe's protocol-level failure must not tear that down: proving this
+  // means proving the NEXT probe reuses the existing connection rather
+  // than opening a new one.
+  mode = 'ok';
+  const recovered = await probeCrawl4AI(3000);
+  assert.equal(recovered.status, 'ok');
+  assert.equal(
+    successfulConnectAttempts,
+    1,
+    'a tools/list-level protocol_error must not reset the shared client: the next probe should reuse the existing connection, not reconnect',
+  );
+});
+
+test('a tools/list-level timeout does not reset the live connection: no new connect attempt follows', async () => {
+  mode = 'silent';
+  successfulConnectAttempts = 0;
+  const probeCrawl4AI = await freshProbe();
+
+  const timedOut = await probeCrawl4AI(500);
+  assert.equal(timedOut.status, 'unhealthy');
+  assert.equal(timedOut.detail, 'timeout');
+  assert.equal(
+    successfulConnectAttempts,
+    1,
+    'the connect itself succeeded; only the tools/list request timed out',
+  );
+
+  // Same distinction as the protocol_error case above, for the other
+  // McpError-shaped tools/list failure: a slow answer to one probe request
+  // is not evidence the connection is unusable, so it must not be reset —
+  // unlike a connect-level timeout (see the `connect_hangs` test above),
+  // which always resets because the connect itself never finished.
+  mode = 'ok';
+  const recovered = await probeCrawl4AI(3000);
+  assert.equal(recovered.status, 'ok');
+  assert.equal(
+    successfulConnectAttempts,
+    1,
+    'a tools/list-level timeout must not reset the shared client: the next probe should reuse the existing connection, not reconnect',
   );
 });
 
