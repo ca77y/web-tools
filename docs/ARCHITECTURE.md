@@ -62,7 +62,7 @@ The Node.js 24 application hosts MCP and REST. It is stateless except for proces
 
 ### Crawl4AI
 
-Crawl4AI owns browser-grade retrieval, rendering, extraction, screenshots, PDF generation, and JavaScript execution. Its protocol and result classification are encapsulated by the toolkit client.
+Crawl4AI owns browser-grade retrieval, rendering, extraction, screenshots, PDF generation, and JavaScript execution. Its protocol and result classification are encapsulated by the toolkit client. The repository owns the image it runs; see [Service Image Provenance](#service-image-provenance).
 
 ### SearXNG
 
@@ -235,6 +235,14 @@ The service graph should remain explicit:
 - SearXNG depends on Redis according to its service configuration.
 - Archive operations depend on public Wayback Machine endpoints.
 - The API listens on the platform-provided `PORT`, defaulting to `3000` locally.
+
+### Service Image Provenance
+
+Three of the four owned services are built from this repository, and both the local Compose stack and the production deployment build from the same sources: Web Tools from the root `Dockerfile`, SearXNG from `services/searxng`, and Crawl4AI from `services/crawl4ai`. Only Redis runs a stock upstream image (`redis:7-alpine`).
+
+Crawl4AI is repository-owned rather than pulled prebuilt because the upstream image is unusable as published: its Playwright headless-shell binary is missing from the path Crawl4AI resolves at runtime, so the server fails to launch a browser. `services/crawl4ai/Dockerfile` pins `unclecode/crawl4ai:0.9.1`, reinstalls the browser binaries, and guards the build on the binary being present. The pin also keeps the Crawl4AI version from drifting. That image is amd64-only, so the Compose service declares `platform: linux/amd64` and arm64 hosts run it under emulation; the first local start builds the image rather than pulling it.
+
+Operator-facing setup for both paths lives outside this document: local stack steps in the root [`README.md`](../README.md), and the per-service Railway configuration in [`RAILWAY.md`](../RAILWAY.md).
 
 ## Technology Choices
 
