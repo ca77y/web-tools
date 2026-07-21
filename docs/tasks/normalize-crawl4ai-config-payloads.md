@@ -5,7 +5,7 @@ title: Normalize Crawl4AI browser_config and crawler_config payload shapes
 
 # Normalize Crawl4AI browser_config and crawler_config payload shapes
 
-- [ ] Normalize Crawl4AI browser_config and crawler_config payload shapes #bug 🔺 🆔 normalize-crawl4ai-config-payloads
+- [<] Normalize Crawl4AI browser_config and crawler_config payload shapes #bug 🔺 🆔 normalize-crawl4ai-config-payloads
   - Phase: Phase 1 - Reliable Core
   - Problem (proven): Web Tools sends **two different, mutually incompatible** `crawler_config` / `browser_config` wire shapes to the same Crawl4AI `crawl` tool depending on which entry point the caller used. `web_fetch` sends the **wrapped** `{ type, params }` form. The CLI `crawl` command and any REST caller following our published Zod schema send a **flat, unwrapped** object. Separately and independently, `web_crawl` **silently discards** a caller's unwrapped `browser_config` keys — the caller gets no error and a different browser configuration than requested. Both defects are proven by the code citations below and justify this story on their own.
   - Hypothesis (unconfirmed): the flat form is what Crawl4AI rejects with `HTTP/1.1 400 Bad Request`. This is **plausible but not established** — it is inferred from the fact that the wrapped `web_fetch` path is known to work in production while the flat path is the only other shape we emit. It is **not** confirmed as the cause of the 2026-07-18 burst, and this story must not be treated as closing that incident. See [`../issues/crawl4ai-400-burst-root-cause-unrecoverable.md`](../issues/crawl4ai-400-burst-root-cause-unrecoverable.md) for why attribution is impossible from the retained logs. Confirming or refuting the hypothesis is the first scope item below.
