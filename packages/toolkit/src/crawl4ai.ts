@@ -41,8 +41,13 @@ async function getClient(): Promise<Client> {
     // handler from a transport a newer connect attempt already replaced
     // becomes a no-op instead of closing/nulling the replacement, and an
     // established connection that drops (a Crawl4AI restart or crash)
-    // gets its transport actually closed, not merely dereferenced, so no
-    // background reconnect loop survives it.
+    // gets its transport actually closed via this path, not merely
+    // dereferenced. This guarantee is scoped to callers that go through
+    // `resetClient()`: `call()`'s own catch below still nulls `client`/
+    // `connecting` directly without clearing `activeTransport`, which can
+    // still orphan a transport and its reconnect timer on that path —
+    // tracked as a known gap owned by the sibling
+    // `normalize-crawl4ai-config-payloads` story, not this one.
     //
     // `onerror` is deliberately gated on `err instanceof SseError`. The SDK
     // funnels several unrelated failure shapes through this same callback,
