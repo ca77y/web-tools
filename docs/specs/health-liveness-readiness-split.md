@@ -66,6 +66,34 @@ Per `packages/CLAUDE.md`, provider protocol details stay inside toolkit provider
 - **`readiness.ts` owns aggregation.** `checkReadiness()` runs both probes with `Promise.all`, times each with `performance.now()`, applies its **own** `Promise.race` timeout bound on top of each probe's native timeout (so a client that ignores its timeout argument still cannot hang the endpoint), caches the report, and computes the rollup. `checkReadiness()` never rejects: every probe outcome, including an unexpected throw, is classified.
 - **`packages/api/src/index.ts` owns only the route.** The handler awaits `checkReadiness()` and sends the document with HTTP 200. No probing, no classification, no shaping in the API package.
 
+### Amendment (post-integration-review): the probe must be able to close the transport it abandons
+
+The integration review verified two production hazards against the vendored dependency source. Both invalidate the original "never touch `getClient()`" boundary, so this amendment supersedes it for one narrow purpose.
+
+1. **Orphaned reconnect loops.** In `eventsource@3.0.7`, a *rejected* fetch (a refused connection — a stopped container, a dead Railway private-network host, a DNS failure) schedules an internal reconnect every ~3 s **forever**. `SSEClientTransport`'s error path never closes the EventSource. So resetting `client`/`connecting` on a probe rejection orphans a still-retrying loop, and the next probe round builds another. Under a sustained outage with a monitor polling `/ready`, orphans accumulate without bound and drive far more upstream traffic than the TTL cache exists to permit — routing around the very load bound the card requires. Note a *non-200 status* takes a different, terminal, leak-free path, which is why a 503 fixture cannot expose this.
+2. **A wedged connect.** With no timeout on the connect itself and nothing to abort it, a hung upstream (the card's manual step 5) leaves `connecting` pending forever. `call()` awaits that same promise with no timeout of its own, so every Crawl4AI-backed tool hangs indefinitely and stays hung after the upstream recovers. Restart-only recovery.
+
+**Authorized change** — the smallest one that fixes both, and nothing more:
+
+- Keep a module-scope reference to the transport `getClient()` constructs.
+- Add an internal `resetClient()` that best-effort closes that transport (swallowing any close error) and then nulls `client`, `connecting`, and the transport reference. Closing aborts the EventSource, which both stops the retry loop (hazard 1) and settles a wedged in-flight connect (hazard 2).
+- `probeCrawl4AI` calls `resetClient()` on **every** failure branch, including `timeout`. This **supersedes** the "a timeout resets nothing" rule stated above: that rule existed only because the probe had no way to close what it abandoned, which is no longer true. Leave the `timeout` / `protocol_error` / `network_error` classification itself unchanged.
+- Guard every abandoned promise so a settled-after-abandonment connect cannot raise an unhandled rejection.
+
+**Still out of bounds**: `call()`'s own control flow, the `callXTool` exports, the transport construction details, and any reformatting of pre-existing lines. `call()` remains unbounded when nothing polls `/ready`; that is pre-existing behaviour and a follow-up, not this unit's work.
+
+**Test consequence**: because `resetClient()` now stops the retry loop, the leak that forced tests to simulate "Crawl4AI down" as a clean HTTP 503 is gone. At least one scenario per failure mode must exercise a genuinely **refused** connect (the production path) and the suite must still exit cleanly. A 503 fixture alone leaves both hazards untestable by construction.
+
+#### Scenario: an outage does not accumulate reconnect loops
+
+- **WHEN** Crawl4AI's port refuses connections and `checkReadiness()` runs repeatedly across several expired TTL windows
+- **THEN** each round reports `crawl4ai` `unhealthy`, no abandoned transport remains open, the test process exits without a lingering handle, and connection attempts stay bounded by the TTL rather than growing per round
+
+#### Scenario: a hung connect does not wedge the shared client
+
+- **WHEN** a probe times out against an upstream that accepts the connection and then never responds, and the upstream subsequently recovers
+- **THEN** the shared client state has been cleared rather than left pending, and a later probe reports `ok` without a process restart
+
 ### Constants
 
 ```ts
@@ -133,7 +161,7 @@ A test sets `PORT=0` before a dynamic `import()`, reads the ephemeral port from 
 
 **May change**: the seven files listed under *Shape of the change*, plus `docs/ARCHITECTURE.md` and `README.md` (docs, handled by the docs pass, not by the implementing coder).
 
-**Must not change**: `packages/api/src/handler.ts`, `packages/api/src/mcp.ts`, the `log` helper or any logging call site, the API-key middleware body or its `/health` bypass, `keyMatches`, `getClient()` / `call()` / the existing `callXTool` exports in `crawl4ai.ts` (additions only, no restructuring), `searchSearXNG` and its helpers in `searxng.ts` (additions only), `Config` and its schema, `packages/cli`, every `tsconfig*`, `package.json`, the `Dockerfile`, and `docker-compose.yml`.
+**Must not change**: `packages/api/src/handler.ts`, `packages/api/src/mcp.ts`, the `log` helper or any logging call site, the API-key middleware body or its `/health` bypass, `keyMatches`, `call()` / the existing `callXTool` exports in `crawl4ai.ts` (additions only, no restructuring), and `getClient()` **except** for the narrow transport-reference and `resetClient()` change authorized by the amendment above, `searchSearXNG` and its helpers in `searxng.ts` (additions only), `Config` and its schema, `packages/cli`, every `tsconfig*`, `package.json`, the `Dockerfile`, and `docker-compose.yml`.
 
 **Test scope**: new `*.test.ts` files may be added in `packages/toolkit/src/` and `packages/api/src/`; existing test files are not modified. Both packages already own a `test` script and a `tsconfig.test.json`, so every scenario below runs inside this boundary with no test-infrastructure change. In-test fake upstreams (a local Express SearXNG stand-in and a local MCP SSE server built from the already-installed `@modelcontextprotocol/sdk`) live inside the test files only — no production source gains a hook for them.
 
@@ -148,7 +176,7 @@ A test sets `PORT=0` before a dynamic `import()`, reads the ephemeral port from 
 Three sibling stories are in flight and two touch files this unit touches. Keep every edit here strictly additive and scoped to health/readiness.
 
 - **`request-correlation-logging`** edits `packages/api/src/index.ts` (the `log` helper at lines 17-21 and the auth middleware at 33-35), and will introduce a **single shared structured-logging helper in `packages/toolkit`** replacing the three duplicate `log` definitions. Therefore: this unit **adds no log lines at all** — the readiness signal is the response body, not stderr. Do not touch, move, or reuse `log`. If that story lands first, do not retrofit its helper here; that is its work, not this unit's.
-- **`normalize-crawl4ai-config-payloads`** adds a payload-normalization helper inside `packages/toolkit/src/crawl4ai.ts` and reroutes `callCrawlTool`. Therefore: append `probeCrawl4AI` to that file without reordering, rewrapping, or reformatting `getClient()`, `call()`, or the existing tool exports, so both diffs merge cleanly.
+- **`normalize-crawl4ai-config-payloads`** adds a payload-normalization helper inside `packages/toolkit/src/crawl4ai.ts` and reroutes `callCrawlTool`. Therefore: append `probeCrawl4AI` to that file without reordering, rewrapping, or reformatting `call()` or the existing tool exports, so both diffs merge cleanly. The amendment above authorizes a small, additive change *inside* `getClient()` (a transport reference plus `resetClient()`); keep it to added lines so the sibling diff still applies, and accept a resolvable conflict there rather than shipping the two verified hazards — correctness outranks merge convenience, and this is flagged on the PR.
 - **`align-compose-stack-with-deployed-images`** touches `docker-compose.yml`, which this unit does not.
 
 ### Documentation (owned, not dropped)
