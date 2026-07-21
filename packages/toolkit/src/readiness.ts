@@ -100,24 +100,22 @@ function withDeadline(
   });
 }
 
+/**
+ * Captures the start time, starts one probe, and applies readiness.ts's
+ * own deadline bound to it. The start time is captured before the probe is
+ * invoked, matching how each probe times its own success/error latency.
+ */
+function deadlinedProbe(
+  probe: (timeoutMs: number) => Promise<DependencyProbeResult>,
+): Promise<DependencyProbeResult> {
+  const start = performance.now();
+  return withDeadline(probe(PROBE_TIMEOUT_MS), start, PROBE_TIMEOUT_MS);
+}
+
 async function runProbes(): Promise<ReadinessReport> {
-  const searxngStart = performance.now();
-  const searxngPromise = withDeadline(
-    probeSearXNG(PROBE_TIMEOUT_MS),
-    searxngStart,
-    PROBE_TIMEOUT_MS,
-  );
-
-  const crawl4aiStart = performance.now();
-  const crawl4aiPromise = withDeadline(
-    probeCrawl4AI(PROBE_TIMEOUT_MS),
-    crawl4aiStart,
-    PROBE_TIMEOUT_MS,
-  );
-
   const [searxng, crawl4ai] = await Promise.all([
-    searxngPromise,
-    crawl4aiPromise,
+    deadlinedProbe(probeSearXNG),
+    deadlinedProbe(probeCrawl4AI),
   ]);
 
   const okCount =
