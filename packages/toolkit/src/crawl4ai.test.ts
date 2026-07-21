@@ -302,12 +302,42 @@ describe('normalizeCrawl4AIArgs', () => {
     assert.deepEqual(args, snapshot);
   });
 
-  test('a null config value normalizes to an empty canonical envelope rather than throwing', () => {
-    const result = normalizeCrawl4AIArgs({ crawler_config: null });
-    assert.deepEqual(result.crawler_config, {
-      type: 'CrawlerRunConfig',
-      params: {},
-    });
+  test('a present but non-object crawler_config is rejected, not silently coerced to an empty config', () => {
+    for (const junk of ['junk', null, ['array'], 42, true]) {
+      assert.throws(
+        () => normalizeCrawl4AIArgs({ crawler_config: junk }),
+        (err: unknown) => {
+          assert.ok(err instanceof Crawl4AIConfigError);
+          assert.equal(err.field, 'crawler_config');
+          assert.equal(err.typeName, 'CrawlerRunConfig');
+          assert.match(err.message, /crawler_config/);
+          return true;
+        },
+        `expected a Crawl4AIConfigError for crawler_config: ${JSON.stringify(junk)}`,
+      );
+    }
+  });
+
+  test('a present but non-object browser_config is rejected, not silently coerced to an empty config', () => {
+    for (const junk of ['junk', null, ['array'], 42, true]) {
+      assert.throws(
+        () => normalizeCrawl4AIArgs({ browser_config: junk }),
+        (err: unknown) => {
+          assert.ok(err instanceof Crawl4AIConfigError);
+          assert.equal(err.field, 'browser_config');
+          assert.equal(err.typeName, 'BrowserConfig');
+          assert.match(err.message, /browser_config/);
+          return true;
+        },
+        `expected a Crawl4AIConfigError for browser_config: ${JSON.stringify(junk)}`,
+      );
+    }
+  });
+
+  test('an absent config is still a no-op — only a present malformed value is rejected', () => {
+    const result = normalizeCrawl4AIArgs({ urls: ['https://example.com'] });
+    assert.ok(!('crawler_config' in result));
+    assert.ok(!('browser_config' in result));
   });
 
   test('a forbidden field in a wrapped envelope is still caught', () => {

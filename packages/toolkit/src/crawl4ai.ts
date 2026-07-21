@@ -120,6 +120,12 @@ export function unwrapCrawl4AIConfig(
   return value;
 }
 
+function describeValueKind(value: unknown): string {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'an array';
+  return `a ${typeof value}`;
+}
+
 function assertNoForbiddenFields(
   params: Record<string, unknown>,
   typeName: Crawl4AIConfigTypeName,
@@ -150,8 +156,12 @@ function assertNoForbiddenFields(
  * `args`, into the wrapped `{ type, params }` envelope — accepting either
  * caller envelope on the way in. Absent keys are left absent (never
  * invented); every other key in `args` passes through untouched. Throws
- * `Crawl4AIConfigError` when a forbidden field is present, before any
- * request is sent.
+ * `Crawl4AIConfigError` when a forbidden field is present, or when a
+ * present config key is not a config-shaped object (e.g. a string, a
+ * number, `null`, or an array) — the caller asked for a specific config
+ * and silently coercing that to an empty config is the same silent-drop
+ * failure mode this helper exists to eliminate. Naming the malformed key
+ * itself (`browser_config` / `crawler_config`) as the error's `field`.
  */
 export function normalizeCrawl4AIArgs(
   args: Record<string, unknown>,
@@ -159,7 +169,16 @@ export function normalizeCrawl4AIArgs(
   const result: Record<string, unknown> = { ...args };
   for (const [key, typeName] of CONFIG_KEYS) {
     if (!(key in args)) continue;
-    const flat = unwrapCrawl4AIConfig(args[key], typeName) ?? {};
+    const flat = unwrapCrawl4AIConfig(args[key], typeName);
+    if (flat === undefined) {
+      throw new Crawl4AIConfigError(
+        key,
+        typeName,
+        `Crawl4AI config rejected: '${key}' must be an object — either flat ` +
+          `${typeName} fields, or wrapped as { type: '${typeName}', params }. ` +
+          `Got ${describeValueKind(args[key])}.`,
+      );
+    }
     assertNoForbiddenFields(flat, typeName);
     result[key] = { type: typeName, params: flat };
   }

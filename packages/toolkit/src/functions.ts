@@ -164,7 +164,10 @@ export async function web_fetch(params: Record<string, unknown>): Promise<ToolRe
   const filter = ((params.f as string | undefined) ?? 'fit').toLowerCase();
 
   // Recipe verified 5/5 against ufficiocamerale.it (Cloudflare-protected):
-  // enable_stealth + wait_until:"load" + delay 15s + Italian residential proxy.
+  // enable_stealth + wait_until:"load" + delay 15s. The original recipe also
+  // used a per-request residential proxy, but the pinned Crawl4AI image
+  // forbids proxy_config from an untrusted request (400), so a configured
+  // proxy now fails fast instead of being sent — see defaultBrowserParams().
   // We deliberately do NOT enable magic/simulate_user/override_navigator —
   // those trigger Crawl4AI's pre-emptive CF detection and fingerprint as bot.
   const browserParams: Record<string, unknown> = defaultBrowserParams();
