@@ -1,5 +1,5 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
+import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/sse.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 import { Config } from './config.js';
 import type { DependencyProbeResult } from './readiness.js';
@@ -43,9 +43,44 @@ async function getClient(): Promise<Client> {
     // established connection that drops (a Crawl4AI restart or crash)
     // gets its transport actually closed, not merely dereferenced, so no
     // background reconnect loop survives it.
+    //
+    // `onerror` is deliberately gated on `err instanceof SseError`. The SDK
+    // funnels several unrelated failure shapes through this same callback,
+    // and only one of them means the shared stream itself is unusable:
+    //
+    // - The underlying EventSource erroring — a refused/reset connect, or
+    //   an established stream dropping — always constructs an `SseError`
+    //   before calling this handler, and is the *only* path that ever
+    //   schedules `eventsource`'s internal reconnect timer. This is the
+    //   one case the gate lets through, and it is what fixes hazard 1 (the
+    //   orphaned reconnect-forever loop the spec's amendments describe).
+    // - `send()` (used by every individual tool request, e.g.
+    //   `web_crawl`) calls this same handler with a plain `Error` on a
+    //   failed or non-2xx POST. This is one request's failure on an
+    //   otherwise-live connection; resetting for it would abort every
+    //   other concurrent tool call riding this transport — exactly the
+    //   blast radius `probeCrawl4AI`'s own `tools/list` branch below is
+    //   careful to avoid. The gate excludes it.
+    // - The endpoint-URL parse failure during connect and a rejected
+    //   `_authThenStart` (unreachable here — no `authProvider` is
+    //   configured) also pass a plain `Error`. Both are connect-time-only
+    //   and self-compensate: the endpoint-parse path calls `this.close()`
+    //   itself right after, which reaches `resetClient()` via `onclose`
+    //   below regardless of this gate.
+    // - A malformed SSE message that fails `JSONRPCMessageSchema` parsing
+    //   in `onmessage` also passes a plain `Error` here and is excluded by
+    //   the gate. Unlike the pre-story baseline (which nulled `client`/
+    //   `connecting` unconditionally on any `onerror`), a bad frame no
+    //   longer resets shared state: the connection itself is presumed
+    //   still live — the same "don't tear down a shared connection over
+    //   one bad exchange" reasoning as `send()`'s case above — and the
+    //   in-flight request it broke recovers on its own timeout bound
+    //   (`timeoutMs` for `probeCrawl4AI`; the SDK's default for `call()`).
     transport.onerror = (err) => {
       process.stderr.write(`Crawl4AI transport error: ${err.message}\n`);
-      void resetClient(transport);
+      if (err instanceof SseError) {
+        void resetClient(transport);
+      }
     };
 
     transport.onclose = () => {

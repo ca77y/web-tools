@@ -83,6 +83,12 @@ type IncomingRpc = {
  *                          any transport-level error/close ever firing.
  *                          See the ownership-token test below for why this
  *                          decoupling (from any transport event) matters.
+ * - `post_fails`         : an already-open session's `POST /messages`
+ *                          answers 500 instead of delegating to the
+ *                          transport — the shape `SSEClientTransport.send()`
+ *                          throws a plain `Error` (not an `SseError`) for,
+ *                          used to prove the `onerror` gate in crawl4ai.ts
+ *                          leaves an otherwise-live connection open.
  */
 let mode:
   | 'ok'
@@ -91,7 +97,8 @@ let mode:
   | 'connect_unavailable'
   | 'refused'
   | 'connect_hangs'
-  | 'malformed_pending' = 'ok';
+  | 'malformed_pending'
+  | 'post_fails' = 'ok';
 
 /** Resolves the `tools/list` request `mode === 'malformed_pending'` is holding open. */
 let releaseGate: (() => void) | null = null;
@@ -104,6 +111,26 @@ function releasePendingToolsList(): void {
   const release = releaseGate;
   releaseGate = null;
   release?.();
+}
+
+/**
+ * Polls `predicate` until it is true or `timeoutMs` elapses, then returns
+ * its final value. Used only for a *positive* wait (something should
+ * eventually happen) — the safe direction is to assert absence after a
+ * fixed wait, which every other test in this file already does; a fixed
+ * wait for presence would flake on a loaded machine that schedules the
+ * awaited event later than the guessed margin.
+ */
+async function pollUntil(
+  predicate: () => boolean,
+  timeoutMs: number,
+  intervalMs = 10,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!predicate() && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, intervalMs));
+  }
+  return predicate();
 }
 
 /** Counts `GET /mcp/sse` hits while `mode === 'refused'`. */
@@ -224,6 +251,10 @@ async function handle(
   }
 
   if (req.method === 'POST' && url.pathname === '/messages') {
+    if (mode === 'post_fails') {
+      res.writeHead(500).end('fake server rejects this POST');
+      return;
+    }
     const sessionId = url.searchParams.get('sessionId');
     const transport = [...openTransports].find(t => t.sessionId === sessionId);
     if (!transport) {
@@ -694,7 +725,15 @@ test("a probe abandoned mid-request does not reset a newer round's transport onc
   // attempt must be a no-op rather than closing round B's live T2.
   releasePendingToolsList();
   const strayResult = await straggler;
+  // Pin the branch, not just the status: this test's entire value rests on
+  // the straggler taking the *non*-`McpError` catch, since that is the
+  // only branch that calls `resetClient(myTransport)` at all. If the
+  // schema-validation rejection ever stopped being classified as
+  // `network_error`, the ownership guard below would never even be
+  // exercised, and the "round C reused the connection" assertion would
+  // pass for a reason unrelated to the fix under test.
   assert.equal(strayResult.status, 'unhealthy');
+  assert.equal(strayResult.detail, 'network_error');
 
   // Prove T2 is still open and usable: a further probe reuses it rather
   // than reconnecting.
@@ -761,9 +800,12 @@ test("a superseded transport's late onclose does not clear the shared state its 
     void transport.close();
     openTransports.delete(transport);
   }
-  await new Promise(resolve => setTimeout(resolve, RECONNECT_HINT_MS * 6));
+  const reacted = await pollUntil(
+    () => refusedConnectAttempts > 0,
+    RECONNECT_HINT_MS * 40,
+  );
   assert.ok(
-    refusedConnectAttempts > 0,
+    reacted,
     'the stale transport did react to the drop, so its late handler really did fire',
   );
 
@@ -786,6 +828,57 @@ test("a superseded transport's late onclose does not clear the shared state its 
   // test, exactly as `after()` does for every other leftover session.
   mode = 'connect_unavailable';
   await new Promise(resolve => setTimeout(resolve, RECONNECT_HINT_MS * 6));
+});
+
+test("onerror does not close the transport for a failed tool-call POST: only a genuine stream failure does", async () => {
+  // Pins crawl4ai.ts's `err instanceof SseError` gate on `transport.onerror`.
+  // `SSEClientTransport.send()` (used by every individual tool request,
+  // e.g. `web_crawl`) throws a plain `Error` -- not an `SseError` -- when
+  // its outgoing POST fails or gets a non-2xx answer, confirmed by reading
+  // the SDK's `send()` source. Without the gate, `onerror` would close the
+  // shared transport for this one request's failure alone, aborting every
+  // other concurrent tool call riding it -- the same blast radius
+  // `probeCrawl4AI`'s own `tools/list` branch is careful to avoid.
+  mode = 'ok';
+  successfulConnectAttempts = 0;
+  const preExisting = new Set(openTransports);
+  const { probeCrawl4AI, callCrawlTool } = await freshModule();
+
+  assert.equal((await probeCrawl4AI(3000)).status, 'ok');
+  assert.equal(successfulConnectAttempts, 1);
+  const mine = [...openTransports].filter(t => !preExisting.has(t));
+  assert.equal(mine.length, 1, 'exactly one new server-side SSE session was opened by this test');
+
+  // The tool call's outgoing POST fails with a clean 500. `call()`'s own
+  // catch (crawl4ai.ts; unrelated to this fix) nulls the shared
+  // `client`/`connecting` on any rejection regardless of cause, so the
+  // call itself is expected to reject either way -- the question this
+  // test asks is only whether the *transport* got closed along with it.
+  mode = 'post_fails';
+  await assert.rejects(() => callCrawlTool({ url: 'https://example.invalid/' }));
+
+  // Give a (hypothetically incorrect) close a moment to propagate: closing
+  // client-side ends the underlying HTTP response, which this fake's
+  // `openTransports` bookkeeping only updates once the server observes
+  // that close -- a real, async I/O event, not something visible the
+  // instant `callCrawlTool` rejects.
+  await new Promise(resolve => setTimeout(resolve, RECONNECT_HINT_MS * 6));
+  assert.ok(
+    mine.every(t => openTransports.has(t)),
+    'a failed tool-call POST must not close the shared transport: only a genuine SSE-level failure may',
+  );
+
+  // A fresh connect is still required for the next probe -- `call()`'s
+  // catch nulled `client`/`connecting`, independent of this fix -- but it
+  // must succeed cleanly, proving nothing was left wedged.
+  mode = 'ok';
+  const recovered = await probeCrawl4AI(3000);
+  assert.equal(recovered.status, 'ok');
+  assert.equal(
+    successfulConnectAttempts,
+    2,
+    "the next probe opens a fresh connection because call()'s catch (unrelated to this fix) nulled client/connecting, not because the transport itself was torn down",
+  );
 });
 
 test('every failure detail this probe can emit stays inside the closed set', async () => {
