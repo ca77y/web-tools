@@ -24,19 +24,35 @@
 import assert from 'node:assert/strict';
 import { createServer as createHttpServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { after, afterEach, describe, test as nodeTest } from 'node:test';
+import {
+  after,
+  describe,
+  afterEach as nodeAfterEach,
+  test as nodeTest,
+} from 'node:test';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 
-// Tracks pass/fail independently of node:test's own bookkeeping. The exit
-// path at the bottom of this file cannot rely on `process.exitCode` (it is
-// not yet populated inside a top-level after() hook — verified empirically:
-// node:test only sets it once the whole run, hooks included, has settled)
-// so a failing assertion in this file must not silently report a zero exit
-// code. Every test declared via the `test` shim below counts itself.
+// Tracks pass/fail independently of node:test's own bookkeeping — see the
+// comment on the `after()` teardown at the bottom of this file for what
+// this is protecting against and what was actually verified about it.
+// Both the test body (via the `test` shim) and every `afterEach` hook (via
+// the `afterEach` shim) count themselves: an afterEach that throws is still
+// a real failure in this file's run, and the old version of this counter
+// only tracked test bodies, silently missing hook failures.
 let failureCount = 0;
 function test(name: string, fn: () => void | Promise<void>): void {
   nodeTest(name, async () => {
+    try {
+      await fn();
+    } catch (err) {
+      failureCount++;
+      throw err;
+    }
+  });
+}
+function afterEach(fn: () => void | Promise<void>): void {
+  nodeAfterEach(async () => {
     try {
       await fn();
     } catch (err) {
@@ -664,30 +680,54 @@ describe('concurrent context-free calls get distinct IDs', () => {
 
 after(async () => {
   // Real teardown of everything this fixture owns: end the SSE response,
-  // then close the server.
-  await standIn.close();
-
-  // The toolkit's Crawl4AI client (crawl4ai.ts) is a module-level singleton
-  // with no exported close(): its SSE connection is EventSource-backed, and
-  // EventSource auto-reconnects whenever its stream ends — including right
-  // now, since standIn.close() above just ended it. There is no seam to
-  // tell the toolkit's client to stop retrying (confirmed empirically: even
-  // force-unref-ing every active handle here doesn't stop it, because each
-  // retry opens a fresh, ref'd connection attempt), so the reconnect loop
-  // would keep this file's dedicated `node --test` child process alive
-  // forever if left to exit naturally. `node --test` isolates each test
-  // file in its own process, so exiting here only ends this file's run,
-  // not the sibling files in the suite.
-  //
-  // The exit code is never hard-coded: it reflects `failureCount`, tracked
-  // independently above, so a failing assertion in this file's last test
-  // still produces a non-zero exit rather than being masked by a forced
-  // exit(0). The delay is empirically-derived headroom for the test
-  // runner's own reporter to finish writing out each subtest's result
-  // before the process disappears out from under it — confirmed by
-  // repeated runs that the reported test count matches the declared count
-  // and the exit code matches the tracked failure count in both the
-  // all-passing and an injected-failure case.
-  await new Promise(resolve => setTimeout(resolve, 200));
-  process.exit(failureCount > 0 ? 1 : 0);
+  // then close the server. This can itself fail; if it does, that is a
+  // real teardown failure, so it counts toward the same exit-code decision
+  // below rather than being swallowed — and, whether it throws or not, the
+  // process.exit() below must still run (in `finally`), or a rejecting
+  // close() would leave the `after()` hook itself rejected and this file's
+  // process hanging forever on the EventSource retry loop described below,
+  // never reaching the exit call at all.
+  try {
+    await standIn.close();
+  } catch (err) {
+    failureCount++;
+    process.stderr.write(
+      `standIn.close() failed during teardown: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+  } finally {
+    // The toolkit's Crawl4AI client (crawl4ai.ts) is a module-level
+    // singleton with no exported close(): its SSE connection is
+    // EventSource-backed, and EventSource auto-reconnects whenever its
+    // stream ends — including right after standIn.close() above ends it.
+    // There is no seam to tell the toolkit's client to stop retrying
+    // (confirmed empirically: force-unref-ing every active handle here
+    // does not stop it, because each retry opens a fresh, ref'd connection
+    // attempt), so the reconnect loop would keep this file's dedicated
+    // `node --test` child process alive forever if left to exit naturally.
+    // `node --test` isolates each test file in its own process, so exiting
+    // here only ends this file's run, not the sibling files in the suite.
+    //
+    // The exit code reflects `failureCount` (test bodies and afterEach
+    // hooks both count themselves — see the shims above), not a hard-coded
+    // 0, so a failing assertion or a failing hook in this file does not
+    // get masked by a forced successful exit.
+    //
+    // What is and is not verified about this, precisely, because a stale
+    // claim here is worse than no claim: under `node --test dist-test/*.test.js`
+    // — the glob form the package's own `test` script actually uses, where
+    // each file runs as an isolated child process and the parent aggregates
+    // results — repeated direct measurement in this environment (Node
+    // v26.4.0) found the counter-based exit code correct with *or* without
+    // this delay, across 5 consecutive runs each way, including with a
+    // deliberately broken assertion injected as the very last test in this
+    // file. The same measurement also found the *old*, hard-coded
+    // `process.exit(0)` this replaced did mask a real failure under that
+    // same glob invocation (0 reported failures, one fewer test counted,
+    // for 5/5 runs) — so removing that masking was a real fix, not a
+    // no-op. None of this rules out a slower CI machine or heavier load
+    // producing different timing; the delay stays as cheap headroom for
+    // that, not because it was shown to be load-bearing here.
+    await new Promise(resolve => setTimeout(resolve, 200));
+    process.exit(failureCount > 0 ? 1 : 0);
+  }
 });

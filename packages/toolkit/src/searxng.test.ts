@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, describe, test } from 'node:test';
 
 import { Config } from './config.js';
+import { MAX_ARRAY_ITEMS } from './logging.js';
 import { SearchProviderError, searchSearXNG } from './searxng.js';
 
 const originalFetch = globalThis.fetch;
@@ -555,6 +556,56 @@ describe('searchSearXNG - attribution: query, base URL, and status', () => {
         'status' in record,
         false,
         'a timeout must not carry a status field',
+      );
+    }
+  });
+});
+
+describe('searchSearXNG - the flattened `engines` and the nested `reason.engines` are both sanitized', () => {
+  test('a large, secret-bearing unresponsive_engines list is capped and redacted identically in both places it is logged', async () => {
+    // logAttemptOutcome deliberately surfaces the classification's engines
+    // list twice: once flattened at the top level (record.engines) and
+    // once nested inside the preserved `reason` object
+    // (record.reason.engines) — the same underlying array, referenced from
+    // two fields. Both must be capped to MAX_ARRAY_ITEMS and have any
+    // embedded secret redacted; a fix that only touches the top-level copy
+    // and skips values nested one level down leaves the nested copy raw
+    // and uncapped.
+    const manyEngines: Array<[string, string]> = Array.from(
+      { length: 60 },
+      (_, i) => [`engine-${i}`, 'HTTP error'],
+    );
+    manyEngines[10] = ['https://u:p@ex.com/x?token=SECRET0', 'HTTP error'];
+
+    stubFetch([
+      () => jsonResponse({ results: [], unresponsive_engines: manyEngines }),
+      () => jsonResponse({ results: [], unresponsive_engines: manyEngines }),
+      () => jsonResponse({ results: [], unresponsive_engines: manyEngines }),
+    ]);
+
+    const { lines } = await captureStderr(() =>
+      searchSearXNG('q').catch(() => undefined),
+    );
+
+    for (const line of lines) {
+      assert.ok(!line.includes('SECRET0'), `secret leaked: ${line}`);
+      assert.ok(!line.includes('u:p@'), `credentials leaked: ${line}`);
+    }
+
+    const attempts = parseAll(lines).filter(
+      r => r.event === 'searxng_attempt_outcome',
+    );
+    assert.ok(attempts.length > 0);
+    for (const record of attempts) {
+      const flatEngines = record.engines as string[];
+      const nestedEngines = (record.reason as { engines: string[] }).engines;
+      assert.ok(
+        flatEngines.length <= MAX_ARRAY_ITEMS,
+        `flattened engines not capped: ${flatEngines.length}`,
+      );
+      assert.ok(
+        nestedEngines.length <= MAX_ARRAY_ITEMS,
+        `nested reason.engines not capped: ${nestedEngines.length}`,
       );
     }
   });

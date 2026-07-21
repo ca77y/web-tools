@@ -14,6 +14,9 @@ import {
   getRequestId,
   logEvent,
   logOperation,
+  MAX_ARRAY_ITEMS,
+  MAX_FIELD_LENGTH,
+  MAX_SANITIZE_DEPTH,
   runInRequestContext,
   safeUrl,
   sanitizeRequestId,
@@ -210,7 +213,7 @@ describe('logEvent / logOperation - every field value is sanitized by default', 
     assert.deepEqual(parsed.reason, { cause: 'http_status', status: 429 });
   });
 
-  test('an unboundedly long string field is truncated', () => {
+  test('an unboundedly long string field is truncated to exactly MAX_FIELD_LENGTH, with a truncation marker', () => {
     const { stderr } = captureStreams(() =>
       logOperation('some_op', {
         operation: 'thing',
@@ -220,10 +223,31 @@ describe('logEvent / logOperation - every field value is sanitized by default', 
       }),
     );
     const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
-    assert.ok((parsed.cause as string).length < 10000);
+    const cause = parsed.cause as string;
+    // Pinned to the real constant, not a hand-copied guess: a regression
+    // in the cap (e.g. someone widening it "just a little") must fail this.
+    assert.equal(cause.length, MAX_FIELD_LENGTH);
+    assert.ok(
+      cause.endsWith('[truncated]'),
+      'a truncated value must be visibly marked as cut, not silently passed off as complete',
+    );
   });
 
-  test("an upstream-controlled string array (e.g. SearXNG's unresponsive engines list) is capped in size, and each entry sanitized", () => {
+  test('a string at or under MAX_FIELD_LENGTH carries no truncation marker', () => {
+    const short = 'a short, complete cause message';
+    const { stderr } = captureStreams(() =>
+      logOperation('some_op', {
+        operation: 'thing',
+        outcome: 'error',
+        durationMs: 1,
+        cause: short,
+      }),
+    );
+    const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+    assert.equal(parsed.cause, short);
+  });
+
+  test("an upstream-controlled string array (e.g. SearXNG's unresponsive engines list) is capped to exactly MAX_ARRAY_ITEMS, and each entry sanitized", () => {
     const manyEngines = Array.from({ length: 100 }, (_, i) => `engine-${i}`);
     const { stderr } = captureStreams(() =>
       logOperation('some_op', {
@@ -235,8 +259,179 @@ describe('logEvent / logOperation - every field value is sanitized by default', 
     );
     const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
     const engines = parsed.engines as string[];
-    assert.ok(engines.length < 100, 'the engines array must be capped');
-    assert.ok(engines.length > 0);
+    // Pinned to the real constant, not a hand-copied guess.
+    assert.equal(engines.length, MAX_ARRAY_ITEMS);
+  });
+
+  describe('the redaction regex neither fabricates attribution nor blows up on adversarial input', () => {
+    // Two real bugs found in review, both traced to the same root cause:
+    // the userinfo group's character class did not exclude "/", "?", "#",
+    // so it could span past the real host into unrelated text.
+
+    test('does not treat a later, unrelated "@" in the same run as userinfo and drop the real host', () => {
+      const { stderr } = captureStreams(() =>
+        logOperation('some_op', {
+          operation: 'thing',
+          outcome: 'error',
+          durationMs: 1,
+          cause:
+            'Crawl4AI failed on https://shop.example.com/checkout,notify=ops@pagerduty.example',
+        }),
+      );
+      const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+      assert.equal(
+        parsed.cause,
+        'Crawl4AI failed on https://shop.example.com/checkout,notify=ops@pagerduty.example',
+        'the real host (shop.example.com) must survive, not be silently replaced by pagerduty.example',
+      );
+    });
+
+    test('does not treat a query-shaped ";owner=team@host" as userinfo either', () => {
+      const { stderr } = captureStreams(() =>
+        logOperation('some_op', {
+          operation: 'thing',
+          outcome: 'error',
+          durationMs: 1,
+          cause:
+            'fetch https://api.internal.corp/v2/orders;owner=team@corp.example failed',
+        }),
+      );
+      const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+      assert.equal(
+        parsed.cause,
+        'fetch https://api.internal.corp/v2/orders;owner=team@corp.example failed',
+        'the real host (api.internal.corp) must survive, not be silently replaced by corp.example',
+      );
+    });
+
+    test('a genuine userinfo + query + fragment is still fully stripped (the fix did not just disable redaction)', () => {
+      const { stderr } = captureStreams(() =>
+        logOperation('some_op', {
+          operation: 'thing',
+          outcome: 'error',
+          durationMs: 1,
+          cause: 'https://user:pw@example.com/a/b?token=SUPERSECRET#frag',
+        }),
+      );
+      const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+      assert.equal(parsed.cause, 'https://example.com/a/b');
+    });
+
+    test('a 1MB adversarial token completes within a bounded time budget, not quadratic', () => {
+      // Pathological shape for the old, unbounded-charset regex: many
+      // "@"-adjacent runs following "https://" with no "/", "?", or "#" to
+      // stop the lazy userinfo scan early, at a size where the old code
+      // measured ~32s of synchronous blocking (16KB -> 7ms, 128KB -> 478ms,
+      // 512KB -> 7.8s: clean O(n^2)). The fixed regex is linear; this
+      // asserts a generous but firm ceiling, not a wall-clock guess.
+      const pathological = 'https://' + 'a@'.repeat(500_000) + '?';
+      const start = performance.now();
+      const { stderr } = captureStreams(() =>
+        logOperation('some_op', {
+          operation: 'thing',
+          outcome: 'error',
+          durationMs: 1,
+          cause: pathological,
+        }),
+      );
+      const elapsed = performance.now() - start;
+      assert.ok(
+        elapsed < 500,
+        `sanitizing a 1MB adversarial value took ${elapsed.toFixed(1)}ms; expected well under 500ms for linear behavior (the quadratic bug took ~32000ms at this size)`,
+      );
+      // Also confirm it actually still parses as one valid, bounded line.
+      assert.equal(stderr.length, 1);
+      const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+      assert.equal((parsed.cause as string).length, MAX_FIELD_LENGTH);
+    });
+  });
+
+  describe('nested values are sanitized too, not just top-level strings', () => {
+    test('a secret-bearing URL nested inside an object field (not just a top-level field) is redacted', () => {
+      const { stderr } = captureStreams(() =>
+        logOperation('some_op', {
+          operation: 'thing',
+          outcome: 'error',
+          durationMs: 1,
+          reason: {
+            cause: 'all_engines_unresponsive',
+            detail: 'https://user:pw@example.com/x?token=NESTEDSECRET',
+          },
+        }),
+      );
+      const line = stderr[0]!;
+      assert.ok(
+        !line.includes('NESTEDSECRET'),
+        `secret leaked one level down: ${line}`,
+      );
+      assert.ok(
+        !line.includes('user:pw@'),
+        `credentials leaked one level down: ${line}`,
+      );
+    });
+
+    test('a large array nested inside an object field is capped and each entry sanitized, matching a top-level array', () => {
+      const manyEngines = Array.from({ length: 60 }, (_, i) => `engine-${i}`);
+      manyEngines[5] = 'https://u:p@ex.com/x?token=SECRET0';
+      const { stderr } = captureStreams(() =>
+        logOperation('some_op', {
+          operation: 'thing',
+          outcome: 'error',
+          durationMs: 1,
+          reason: {
+            cause: 'all_engines_unresponsive',
+            engines: manyEngines,
+          },
+        }),
+      );
+      const line = stderr[0]!;
+      assert.ok(
+        !line.includes('SECRET0'),
+        `secret leaked in a nested array: ${line}`,
+      );
+      assert.ok(
+        !line.includes('u:p@'),
+        `credentials leaked in a nested array: ${line}`,
+      );
+      const parsed = JSON.parse(line) as {
+        reason: { engines: string[] };
+      };
+      assert.equal(parsed.reason.engines.length, MAX_ARRAY_ITEMS);
+    });
+
+    test('reason.cause (a short enum) and reason.status (a number) still come through byte-identical', () => {
+      const { stderr } = captureStreams(() =>
+        logOperation('some_op', {
+          operation: 'thing',
+          outcome: 'error',
+          durationMs: 1,
+          reason: { cause: 'http_status', status: 429 },
+        }),
+      );
+      const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+      assert.deepEqual(parsed.reason, { cause: 'http_status', status: 429 });
+    });
+
+    test('nesting deeper than MAX_SANITIZE_DEPTH is collapsed rather than emitted raw', () => {
+      // Build a chain deeper than the budget, with a secret at the bottom.
+      let deep: unknown = 'https://u:p@example.com/x?token=DEEPSECRET';
+      for (let i = 0; i < MAX_SANITIZE_DEPTH + 3; i++) {
+        deep = { nested: deep };
+      }
+      const { stderr } = captureStreams(() =>
+        logOperation('some_op', {
+          operation: 'thing',
+          outcome: 'error',
+          durationMs: 1,
+          payload: deep,
+        }),
+      );
+      const line = stderr[0]!;
+      assert.ok(
+        !line.includes('DEEPSECRET'),
+        `secret leaked past the depth budget: ${line}`,
+      );
+    });
   });
 });
 

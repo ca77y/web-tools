@@ -20,17 +20,32 @@
  */
 import assert from 'node:assert/strict';
 import { createServer as createTcpServer } from 'node:net';
-import { after, afterEach, describe, test as nodeTest } from 'node:test';
+import {
+  after,
+  describe,
+  afterEach as nodeAfterEach,
+  test as nodeTest,
+} from 'node:test';
 
-// Tracks pass/fail independently of node:test's own bookkeeping. The exit
-// path at the bottom of this file cannot rely on `process.exitCode` (it is
-// not yet populated inside a top-level after() hook — verified empirically:
-// node:test only sets it once the whole run, hooks included, has settled)
-// so a failing assertion in this file must not silently report a zero exit
-// code. Every test declared via the `test` shim below counts itself.
+// Tracks pass/fail independently of node:test's own bookkeeping — see the
+// comment on the `after()` teardown at the bottom of this file for what
+// this is protecting against and what was actually verified about it. Both
+// the test body (via the `test` shim) and every `afterEach` hook (via the
+// `afterEach` shim) count themselves: an afterEach that throws is still a
+// real failure in this file's run.
 let failureCount = 0;
 function test(name: string, fn: () => void | Promise<void>): void {
   nodeTest(name, async () => {
+    try {
+      await fn();
+    } catch (err) {
+      failureCount++;
+      throw err;
+    }
+  });
+}
+function afterEach(fn: () => void | Promise<void>): void {
+  nodeAfterEach(async () => {
     try {
       await fn();
     } catch (err) {
@@ -376,12 +391,28 @@ after(async () => {
   // `node --test` isolates each test file in its own process, so exiting
   // here only ends this file's run, not the sibling files in the suite.
   //
-  // The exit code is never hard-coded: it reflects `failureCount`, tracked
-  // independently above, so a failing assertion in this file's last test
-  // still produces a non-zero exit rather than being masked by a forced
-  // exit(0). The delay is empirically-derived headroom for the test
-  // runner's own reporter to finish writing out each subtest's result
-  // before the process disappears out from under it.
+  // The exit code reflects `failureCount` (test bodies and afterEach hooks
+  // both count themselves — see the shims above), not a hard-coded 0, so a
+  // failing assertion or a failing hook in this file does not get masked
+  // by a forced successful exit.
+  //
+  // What is and is not verified about this, precisely, because a stale
+  // claim here is worse than no claim: under `node --test dist-test/*.test.js`
+  // — the glob form the package's own `test` script actually uses, where
+  // each file runs as an isolated child process and the parent aggregates
+  // results — repeated direct measurement in this environment (Node
+  // v26.4.0) found the counter-based exit code correct with *or* without
+  // this delay, across 5 consecutive runs each way, including with a
+  // deliberately broken assertion injected as the very last test in the
+  // sibling `crawl4ai-attribution.test.ts` file (same mechanism, tested
+  // there because it has more tests to inject a "last test" failure into).
+  // The same measurement also found the *old*, hard-coded `process.exit(0)`
+  // this replaced did mask a real failure under that same glob invocation
+  // (0 reported failures, one fewer test counted, for 5/5 runs) — so
+  // removing that masking was a real fix, not a no-op. None of this rules
+  // out a slower CI machine or heavier load producing different timing;
+  // the delay stays as cheap headroom for that, not because it was shown
+  // to be load-bearing here.
   await new Promise(resolve => setTimeout(resolve, 200));
   process.exit(failureCount > 0 ? 1 : 0);
 });
