@@ -76,13 +76,29 @@ The integration review verified two production hazards against the vendored depe
 **Authorized change** — the smallest one that fixes both, and nothing more:
 
 - Keep a module-scope reference to the transport `getClient()` constructs.
-- Add an internal `resetClient()` that best-effort closes that transport (swallowing any close error) and then nulls `client`, `connecting`, and the transport reference. Closing aborts the EventSource, which both stops the retry loop (hazard 1) and settles a wedged in-flight connect (hazard 2).
-- `probeCrawl4AI` calls `resetClient()` on **every** failure branch, including `timeout`. This **supersedes** the "a timeout resets nothing" rule stated above: that rule existed only because the probe had no way to close what it abandoned, which is no longer true. Leave the `timeout` / `protocol_error` / `network_error` classification itself unchanged.
+- Add an internal `resetClient()` that best-effort closes that transport (swallowing any close error) and then nulls `client`, `connecting`, and the transport reference.
+  - **Correction (verified against `eventsource@3.0.7`, supersedes an earlier claim in this section).** Closing stops the retry loop, which fixes hazard 1. It does **not** settle a wedged in-flight connect: `_onFetchError` skips both the reconnect and the `error` event when the error is an `AbortError`, and `close()` sets `readyState` to `CLOSED` so the reconnect returns early — and `SSEClientTransport` settles its connect only via that error event or the `endpoint` event. So a hung connect's promise stays pending forever. Hazard 2 is fixed by **nulling the shared state**, which is what unblocks every later caller of `call()`; a caller already awaiting the old promise at reset time still hangs. Do not restate the disproven claim.
+- `probeCrawl4AI` calls `resetClient()` **only for a connect-step failure** (including a connect-level `timeout`), or when a mid-request failure is not an `McpError` and therefore means the transport itself broke. A `tools/list` `timeout` or `protocol_error` against an already-connected client must **not** reset: that client is live and shared, and tearing it down would abort concurrent `web_crawl` / `web_screenshot` / `web_pdf` / `web_execute_js` calls — letting the readiness signal break the thing it reports on. Leave the `timeout` / `protocol_error` / `network_error` classification itself unchanged.
 - Guard every abandoned promise so a settled-after-abandonment connect cannot raise an unhandled rejection.
+
+**Second amendment — transport ownership.** The re-review found that a single module-global transport reference is not enough, because a reset can act on a transport that is no longer the one it was called for:
+
+- Give each connect attempt an **ownership token** (a generation counter or the transport reference itself) captured when the probe starts. `resetClient()` must close and null **only** if the captured transport is still the current one. Without this, a straggler probe abandoned by `readiness.ts`'s outer deadline can return up to ~3 s later and close the *next* round's healthy transport, and a late `onerror`/`onclose` from a superseded transport can null shared state belonging to its replacement.
+- Route the existing `transport.onerror` / `transport.onclose` handlers through the same ownership-guarded close path. Today they null `client`/`connecting` **without closing the transport**, so an established connection that later drops (a Crawl4AI restart or crash) leaves `eventsource` retrying forever in the background, independent of any probe — the same hazard 1 leak by another route. `/ready` polling makes a long-lived client the steady state, so this now fires on every Crawl4AI restart, and on recovery leaves a ghost SSE stream holding an upstream slot for the process lifetime.
 
 **Still out of bounds**: `call()`'s own control flow, the `callXTool` exports, the transport construction details, and any reformatting of pre-existing lines. `call()` remains unbounded when nothing polls `/ready`; that is pre-existing behaviour and a follow-up, not this unit's work.
 
 **Test consequence**: because `resetClient()` now stops the retry loop, the leak that forced tests to simulate "Crawl4AI down" as a clean HTTP 503 is gone. At least one scenario per failure mode must exercise a genuinely **refused** connect (the production path) and the suite must still exit cleanly. A 503 fixture alone leaves both hazards untestable by construction.
+
+#### Scenario: a straggler probe never resets a newer client
+
+- **WHEN** a probe is abandoned by the readiness deadline, a later round connects successfully, and the abandoned probe then fails and attempts its reset
+- **THEN** the newer round's transport is left open and usable, because the straggler's captured transport is no longer the current one
+
+#### Scenario: a dropped established connection leaves no retrying loop
+
+- **WHEN** an already-connected Crawl4AI SSE stream is dropped by the server (a restart or crash) with no probe in flight
+- **THEN** the transport is closed rather than merely dereferenced, no background reconnect loop survives, and a later probe establishes exactly one new connection
 
 #### Scenario: an outage does not accumulate reconnect loops
 
