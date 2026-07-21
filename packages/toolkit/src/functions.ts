@@ -5,12 +5,13 @@ import {
   callMdTool,
   callPdfTool,
   callScreenshotTool,
+  unwrapCrawl4AIConfig,
 } from './crawl4ai.js';
 import { noteBlocked, noteSuccess } from './rotation.js';
 import { searchSearXNG } from './searxng.js';
 import { getStats, recordCall, type ToolName } from './stats.js';
-import { getArchivedPage, getSnapshots } from './wayback.js';
 import type { ToolResult } from './types.js';
+import { getArchivedPage, getSnapshots } from './wayback.js';
 
 // Regex matching upstream Crawl4AI failure modes that benefit from a
 // browser rotation: explicit anti-bot signals (429, CF challenge) AND
@@ -45,7 +46,8 @@ function traceJson(tool: ToolName, payload: unknown): void {
 
 const log = (...args: unknown[]) => {
   process.stderr.write(
-    args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ') + '\n',
+    args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ') +
+      '\n',
   );
 };
 
@@ -65,7 +67,9 @@ async function proxyCrawl4AI(
         '(no details returned)';
       log(`Crawl4AI ${toolName} error response:`, text);
       return {
-        content: [{ type: 'text', text: `Crawl4AI ${toolName} error: ${text}` }],
+        content: [
+          { type: 'text', text: `Crawl4AI ${toolName} error: ${text}` },
+        ],
         isError: true,
       };
     }
@@ -73,7 +77,7 @@ async function proxyCrawl4AI(
     if (
       !resolved?.content ||
       resolved.content.length === 0 ||
-      resolved.content.every((c) => !c.text)
+      resolved.content.every(c => !c.text)
     ) {
       log(`Crawl4AI ${toolName} returned empty content`);
       return {
@@ -96,6 +100,29 @@ async function proxyCrawl4AI(
       isError: true,
     };
   }
+}
+
+// Default browser_config fields shared by web_fetch and web_crawl, so both
+// entry points emit byte-identical envelopes for equivalent input (proven
+// by normalizeCrawl4AIArgs canonicalizing both the same way in crawl4ai.ts
+// call()). `proxy_config` here is deliberately a forbidden field per the
+// pinned image (see crawl4ai.ts) — including it when a proxy is configured
+// makes the request fail fast with an actionable error rather than
+// silently dropping the proxy or sending a headless browser out the
+// datacenter IP.
+function defaultBrowserParams(): Record<string, unknown> {
+  const params: Record<string, unknown> = {
+    headless: true,
+    enable_stealth: true,
+  };
+  if (Config.proxy) {
+    params.proxy_config = {
+      server: Config.proxy.server,
+      username: Config.proxy.username,
+      password: Config.proxy.password,
+    };
+  }
+  return params;
 }
 
 // ── Tool handler functions ───────────────────────────────────────────
@@ -126,14 +153,18 @@ export async function web_search(params: {
   }
 }
 
-export async function web_fetch(params: Record<string, unknown>): Promise<ToolResult> {
+export async function web_fetch(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
   // The upstream Crawl4AI `md` MCP tool is unstable on this version
   // (BrowserContext.new_page: Connection closed while reading from the driver).
   // Route through the working `crawl` tool and extract markdown ourselves.
   const url = params.url as string | undefined;
   if (!url) {
     return {
-      content: [{ type: 'text', text: 'web_fetch error: missing required `url`' }],
+      content: [
+        { type: 'text', text: 'web_fetch error: missing required `url`' },
+      ],
       isError: true,
     };
   }
@@ -143,40 +174,25 @@ export async function web_fetch(params: Record<string, unknown>): Promise<ToolRe
   // enable_stealth + wait_until:"load" + delay 15s + Italian residential proxy.
   // We deliberately do NOT enable magic/simulate_user/override_navigator —
   // those trigger Crawl4AI's pre-emptive CF detection and fingerprint as bot.
-  const browserParams: Record<string, unknown> = { headless: true, enable_stealth: true };
-  if (Config.proxy) {
-    browserParams.proxy_config = {
-      type: 'ProxyConfig',
-      params: {
-        server: Config.proxy.server,
-        username: Config.proxy.username,
-        password: Config.proxy.password,
-      },
-    };
-  }
+  const browserParams: Record<string, unknown> = defaultBrowserParams();
 
-  // Optional Crawl4AI session_id — when callers pass the same id across
-  // calls, Crawl4AI reuses the browser context, so the cf_clearance
-  // cookie set on the first call carries over and subsequent calls skip
-  // the JS challenge (~25s → ~3s).
-  const sessionId = typeof params.session_id === 'string' ? params.session_id : undefined;
-  // Override delay_before_return_html — useful for "warm" calls in an
-  // existing session where CF is already cleared.
+  // Override delay_before_return_html.
   const delay =
-    typeof params.delay === 'number' && Number.isFinite(params.delay) ? params.delay : 15;
+    typeof params.delay === 'number' && Number.isFinite(params.delay)
+      ? params.delay
+      : 15;
 
+  // `session_id` is deliberately not read from params: the pinned Crawl4AI
+  // image forbids it on CrawlerRunConfig from an untrusted request (400),
+  // and it is no longer part of WebFetchInput's published contract.
   return proxyCrawl4AI('crawl', async () => {
     const resp = (await callCrawlTool({
       urls: [url],
-      browser_config: { type: 'BrowserConfig', params: browserParams },
+      browser_config: browserParams,
       crawler_config: {
-        type: 'CrawlerRunConfig',
-        params: {
-          wait_until: 'load',
-          page_timeout: 120000,
-          delay_before_return_html: delay,
-          ...(sessionId ? { session_id: sessionId } : {}),
-        },
+        wait_until: 'load',
+        page_timeout: 120000,
+        delay_before_return_html: delay,
       },
     })) as ToolResult;
 
@@ -189,16 +205,23 @@ export async function web_fetch(params: Record<string, unknown>): Promise<ToolRe
     } catch {
       return resp;
     }
-    const r = (parsed as { results?: Array<Record<string, unknown>> })?.results?.[0];
+    const r = (parsed as { results?: Array<Record<string, unknown>> })
+      ?.results?.[0];
     if (!r) return resp;
 
     let md = '';
-    const m = r.markdown as string | { raw_markdown?: string; fit_markdown?: string } | undefined;
+    const m = r.markdown as
+      | string
+      | { raw_markdown?: string; fit_markdown?: string }
+      | undefined;
     if (typeof m === 'string') {
       md = m;
     } else if (m && typeof m === 'object') {
       md =
-        (filter === 'raw' ? m.raw_markdown : m.fit_markdown) || m.raw_markdown || m.fit_markdown || '';
+        (filter === 'raw' ? m.raw_markdown : m.fit_markdown) ||
+        m.raw_markdown ||
+        m.fit_markdown ||
+        '';
     }
     if (!md) return resp;
 
@@ -206,58 +229,50 @@ export async function web_fetch(params: Record<string, unknown>): Promise<ToolRe
       content: [{ type: 'text', text: md }],
       isError: !r.success,
     };
-  }).then((r) => trace('web_fetch', r));
+  }).then(r => trace('web_fetch', r));
 }
 
-export async function web_screenshot(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('screenshot', () => callScreenshotTool(params)).then((r) =>
+export async function web_screenshot(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  return proxyCrawl4AI('screenshot', () => callScreenshotTool(params)).then(r =>
     trace('web_screenshot', r),
   );
 }
 
-export async function web_pdf(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('pdf', () => callPdfTool(params)).then((r) => trace('web_pdf', r));
+export async function web_pdf(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  return proxyCrawl4AI('pdf', () => callPdfTool(params)).then(r =>
+    trace('web_pdf', r),
+  );
 }
 
-export async function web_execute_js(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('execute_js', () => callExecuteJsTool(params)).then((r) =>
+export async function web_execute_js(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  return proxyCrawl4AI('execute_js', () => callExecuteJsTool(params)).then(r =>
     trace('web_execute_js', r),
   );
 }
 
-export async function web_crawl(params: Record<string, unknown>): Promise<ToolResult> {
-  // Default sensible browser config (enable_stealth + residential proxy) when
-  // the caller didn't set their own. Keeps web_crawl symmetric with web_fetch.
-  const bc = (params.browser_config as { params?: Record<string, unknown> } | undefined) ?? {};
-  const bcParams = bc.params ?? {};
-  const needProxy = Config.proxy && !bcParams.proxy_config;
-  const needStealth = bcParams.enable_stealth === undefined;
-  if (needProxy || needStealth) {
-    params = {
-      ...params,
-      browser_config: {
-        type: 'BrowserConfig',
-        params: {
-          headless: true,
-          enable_stealth: true,
-          ...bcParams,
-          ...(needProxy
-            ? {
-                proxy_config: {
-                  type: 'ProxyConfig',
-                  params: {
-                    server: Config.proxy!.server,
-                    username: Config.proxy!.username,
-                    password: Config.proxy!.password,
-                  },
-                },
-              }
-            : {}),
-        },
-      },
-    };
-  }
-  return proxyCrawl4AI('crawl', () => callCrawlTool(params)).then((r) =>
+export async function web_crawl(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  // Merge the caller's browser_config (flat or wrapped — unwrapCrawl4AIConfig
+  // reads either) over the same stealth/proxy defaults web_fetch uses, so no
+  // caller-supplied key is silently discarded in either envelope and both
+  // entry points emit byte-identical envelopes for equivalent input.
+  const callerBrowserParams =
+    unwrapCrawl4AIConfig(params.browser_config, 'BrowserConfig') ?? {};
+  params = {
+    ...params,
+    browser_config: {
+      ...defaultBrowserParams(),
+      ...callerBrowserParams,
+    },
+  };
+  return proxyCrawl4AI('crawl', () => callCrawlTool(params)).then(r =>
     trace('web_crawl', r),
   );
 }

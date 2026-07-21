@@ -19,6 +19,7 @@
     "commander": "^13.1.0"
   },
   "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.1",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3"
   }
