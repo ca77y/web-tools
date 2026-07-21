@@ -236,22 +236,34 @@ export async function web_execute_js(params: Record<string, unknown>): Promise<T
 }
 
 export async function web_crawl(params: Record<string, unknown>): Promise<ToolResult> {
-  // Merge the caller's browser_config (flat or wrapped — unwrapCrawl4AIConfig
-  // reads either) over the same stealth/proxy defaults web_fetch uses, so no
-  // caller-supplied key is silently discarded in either envelope and both
-  // entry points emit byte-identical envelopes for equivalent input.
-  const callerBrowserParams =
-    unwrapCrawl4AIConfig(params.browser_config, 'BrowserConfig') ?? {};
-  params = {
-    ...params,
-    browser_config: {
-      ...defaultBrowserParams(),
-      ...callerBrowserParams,
-    },
-  };
-  return proxyCrawl4AI('crawl', () => callCrawlTool(params)).then((r) =>
-    trace('web_crawl', r),
-  );
+  return proxyCrawl4AI('crawl', () => {
+    // Merge the caller's browser_config (flat or wrapped — unwrapCrawl4AIConfig
+    // reads either) over the same stealth/proxy defaults web_fetch uses, so no
+    // caller-supplied key is silently discarded in either envelope and both
+    // entry points emit byte-identical envelopes for equivalent input.
+    // unwrapCrawl4AIConfig throws Crawl4AIConfigError for a present but
+    // non-object browser_config (a string, number, boolean, null, or
+    // array) instead of returning undefined for it — that case must NOT
+    // fall through the `?? {}` below into "use only the defaults", or a
+    // caller who asked for a specific config gets it silently swapped for
+    // the defaults with no error, which is the exact failure mode this
+    // story exists to eliminate. Doing the merge inside this callback
+    // (rather than before proxyCrawl4AI is called) means that throw is
+    // caught by proxyCrawl4AI's catch below and turned into an isError
+    // result naming the field, before any request is sent. An absent
+    // browser_config still resolves to `undefined ?? {}` — defaults only,
+    // no error — exactly as before.
+    const callerBrowserParams =
+      unwrapCrawl4AIConfig(params.browser_config, 'BrowserConfig') ?? {};
+    const merged = {
+      ...params,
+      browser_config: {
+        ...defaultBrowserParams(),
+        ...callerBrowserParams,
+      },
+    };
+    return callCrawlTool(merged);
+  }).then((r) => trace('web_crawl', r));
 }
 
 export async function web_snapshots(params: {

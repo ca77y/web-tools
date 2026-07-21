@@ -462,3 +462,70 @@ describe('caller browser_config edge cases on the web_crawl path', () => {
     });
   });
 });
+
+describe('A present but malformed config on the web_crawl path is rejected, not silently coerced', () => {
+  // web_crawl merges the caller's browser_config over the stealth/proxy
+  // defaults before the request reaches call(); that merge must not let a
+  // present-but-non-object browser_config (the caller asked for something
+  // specific) silently fall through to "use only the defaults" the way an
+  // absent browser_config correctly does. See crawl4ai.ts
+  // unwrapCrawl4AIConfig and functions.ts web_crawl.
+  const malformedBrowserConfigs: Array<[string, unknown]> = [
+    ['a string', 'not-a-config'],
+    ['a number', 42],
+    ['a boolean', true],
+    ['an array', ['not', 'a', 'config']],
+    ['null', null],
+  ];
+
+  for (const [label, junk] of malformedBrowserConfigs) {
+    test(`a browser_config that is ${label} is rejected before the request is sent`, async () => {
+      const before = capture.calls.length;
+      const result = await web_crawl({
+        urls: ['https://example.com'],
+        browser_config: junk,
+      });
+      assert.equal(result.isError, true);
+      const text = result.content?.[0]?.text ?? '';
+      assert.match(text, /browser_config/);
+      assert.equal(
+        capture.calls.length,
+        before,
+        'no crawl invocation must reach the MCP server',
+      );
+    });
+  }
+
+  // Pin: web_crawl forwards crawler_config to call() untouched (unlike
+  // browser_config, it is never merged/rebuilt in functions.ts), so a
+  // malformed crawler_config already reaches normalizeCrawl4AIArgs as the
+  // caller sent it and is rejected there today. This test exists so a
+  // future refactor of web_crawl that starts merging crawler_config the
+  // way it merges browser_config cannot silently reopen this same hole
+  // for the other key without a test noticing.
+  const malformedCrawlerConfigs: Array<[string, unknown]> = [
+    ['a string', 'not-a-config'],
+    ['a number', 42],
+    ['a boolean', true],
+    ['an array', ['not', 'a', 'config']],
+    ['null', null],
+  ];
+
+  for (const [label, junk] of malformedCrawlerConfigs) {
+    test(`a crawler_config that is ${label} is rejected before the request is sent`, async () => {
+      const before = capture.calls.length;
+      const result = await web_crawl({
+        urls: ['https://example.com'],
+        crawler_config: junk,
+      });
+      assert.equal(result.isError, true);
+      const text = result.content?.[0]?.text ?? '';
+      assert.match(text, /crawler_config/);
+      assert.equal(
+        capture.calls.length,
+        before,
+        'no crawl invocation must reach the MCP server',
+      );
+    });
+  }
+});

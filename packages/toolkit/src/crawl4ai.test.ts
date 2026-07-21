@@ -69,9 +69,30 @@ describe('unwrapCrawl4AIConfig', () => {
     assert.equal(unwrapCrawl4AIConfig(undefined, 'BrowserConfig'), undefined);
   });
 
-  test('returns undefined for a non-object value', () => {
-    assert.equal(unwrapCrawl4AIConfig('nope', 'BrowserConfig'), undefined);
-    assert.equal(unwrapCrawl4AIConfig(42, 'BrowserConfig'), undefined);
+  test('throws Crawl4AIConfigError, naming the config key, for a present non-object value', () => {
+    for (const junk of ['nope', 42, true]) {
+      assert.throws(
+        () => unwrapCrawl4AIConfig(junk, 'BrowserConfig'),
+        (err: unknown) => {
+          assert.ok(err instanceof Crawl4AIConfigError);
+          assert.equal(err.field, 'browser_config');
+          assert.equal(err.typeName, 'BrowserConfig');
+          assert.match(err.message, /browser_config/);
+          return true;
+        },
+        `expected a Crawl4AIConfigError for: ${JSON.stringify(junk)}`,
+      );
+    }
+    // The other config key names itself correctly too.
+    assert.throws(
+      () => unwrapCrawl4AIConfig('nope', 'CrawlerRunConfig'),
+      (err: unknown) => {
+        assert.ok(err instanceof Crawl4AIConfigError);
+        assert.equal(err.field, 'crawler_config');
+        assert.equal(err.typeName, 'CrawlerRunConfig');
+        return true;
+      },
+    );
   });
 
   test('treats a flat object as flat', () => {
@@ -110,12 +131,23 @@ describe('unwrapCrawl4AIConfig', () => {
     );
   });
 
-  test('returns undefined for null and for an array', () => {
+  test('throws for null and for an array — neither is a config-shaped object', () => {
     // `typeof null === 'object'`, and an array is an object too, so both
-    // need the explicit guards. web_crawl relies on `?? {}` here to fall
-    // back to the stealth defaults rather than crashing on junk input.
-    assert.equal(unwrapCrawl4AIConfig(null, 'BrowserConfig'), undefined);
-    assert.equal(unwrapCrawl4AIConfig([1, 2], 'BrowserConfig'), undefined);
+    // need the explicit guards. Neither silently falls back to the
+    // stealth defaults: a present `null`/array browser_config is exactly
+    // as malformed as a present string or number, and gets the same
+    // Crawl4AIConfigError naming the field rather than a silent default.
+    for (const junk of [null, [1, 2]]) {
+      assert.throws(
+        () => unwrapCrawl4AIConfig(junk, 'BrowserConfig'),
+        (err: unknown) => {
+          assert.ok(err instanceof Crawl4AIConfigError);
+          assert.equal(err.field, 'browser_config');
+          return true;
+        },
+        `expected a Crawl4AIConfigError for: ${JSON.stringify(junk)}`,
+      );
+    }
   });
 
   test('a non-object params is not treated as wrapped', () => {
