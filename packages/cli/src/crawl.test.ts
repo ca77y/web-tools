@@ -241,12 +241,12 @@ describe("The CLI's flag mapping keeps working end to end", () => {
 });
 
 describe('--magic fails loudly instead of returning a 400 as page content', () => {
-  // Deviation 2 in docs/specs/normalize-crawl4ai-config-payloads.md: `magic`
-  // is on the pinned image's CrawlerRunConfig forbidden list (probe F), so
-  // `--magic` fails today and still fails after this change — but the
-  // failure must now be an explicit non-zero exit naming the field instead
-  // of an apparent success carrying `{"error": 400, ...}` as content. The
-  // flag-to-config mapping itself is deliberately unchanged.
+  // `magic` is on the pinned image's CrawlerRunConfig forbidden list (see
+  // docs/ARCHITECTURE.md, "Crawl4AI Config Contract"), so `--magic` fails
+  // today and still fails after this change — but the failure must now be
+  // an explicit non-zero exit naming the field instead of an apparent
+  // success carrying `{"error": 400, ...}` as content. The flag-to-config
+  // mapping itself is deliberately unchanged.
   test('--magic exits 1, names the field on stderr, and sends no request', async () => {
     const before = capture.calls.length;
     const { exitCodes, stderr } = await runCli([

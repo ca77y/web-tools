@@ -1,7 +1,8 @@
 /**
- * Direct unit tests of the config-normalization helper added by
- * docs/specs/normalize-crawl4ai-config-payloads.md: `normalizeCrawl4AIArgs`,
- * `unwrapCrawl4AIConfig`, and `Crawl4AIConfigError`. These exercise the
+ * Direct unit tests of the config-normalization helper documented in
+ * docs/ARCHITECTURE.md, "Crawl4AI Config Contract" (under Runtime Services
+ * → Crawl4AI): `normalizeCrawl4AIArgs`, `unwrapCrawl4AIConfig`, and
+ * `Crawl4AIConfigError`. These exercise the
  * helper in isolation — no network, no MCP server — leaving the
  * end-to-end "what actually goes out on the wire" scenarios to
  * web-crawl-envelope.test.ts (default env) and web-crawl-proxy.test.ts
@@ -23,9 +24,10 @@ import {
 } from './crawl4ai.js';
 
 // The pinned image's UNTRUSTED_FORBIDDEN_FIELDS, transcribed literally from
-// docs/specs/normalize-crawl4ai-config-payloads.md "Result 2" so this test
-// fails if crawl4ai.ts's constants ever drift from the recorded evidence
-// (a typo in one field name would otherwise let that field through).
+// the forbidden-field lists in docs/ARCHITECTURE.md's "Crawl4AI Config
+// Contract", so this test fails if crawl4ai.ts's constants ever drift from
+// the recorded evidence (a typo in one field name would otherwise let that
+// field through).
 const FORBIDDEN_BROWSER_FIELDS = [
   'browser_context_id',
   'cdp_url',

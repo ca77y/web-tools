@@ -1,16 +1,15 @@
 /**
- * Proxy fail-fast scenarios, per the unit's Design "Consequences for
- * existing behavior": probe C (docs/specs/normalize-crawl4ai-config-payloads.md)
- * proves the pinned Crawl4AI image rejects `browser_config.proxy_config`
- * with a 400 regardless of envelope, so both `web_fetch` and `web_crawl`
- * must now fail fast with an actionable error instead of emitting that
- * request.
+ * Proxy fail-fast scenarios, documented in docs/ARCHITECTURE.md's "Crawl4AI
+ * Config Contract" (the "Operator consequence" paragraph): the pinned
+ * Crawl4AI image rejects `browser_config.proxy_config` with a 400
+ * regardless of envelope, so both `web_fetch` and `web_crawl` must fail
+ * fast with an actionable error instead of emitting that request.
  *
  * This scenario needs its own PROXY_SERVER/PROXY_USERNAME environment, and
  * `packages/toolkit/src/config.ts` parses the environment at import time —
- * so, per the unit's Validation section, it lives in its own test file
- * (`node --test` runs each file in its own process) and sets the proxy env
- * plus `CRAWL4AI_URL` before the top-level `await import('./functions.js')`.
+ * so it lives in its own test file (`node --test` runs each file in its
+ * own process) and sets the proxy env plus `CRAWL4AI_URL` before the
+ * top-level `await import('./functions.js')`.
  */
 import assert from 'node:assert/strict';
 import { createServer as createHttpServer } from 'node:http';

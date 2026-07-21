@@ -8,12 +8,12 @@ import { Config } from './config.js';
 // and `crawler_config` identically (flat, or wrapped as
 // `{ type, params }`), but silently drops any field absent from its own
 // per-type allowlist and answers a *forbidden* field with a 400. See
-// docs/specs/normalize-crawl4ai-config-payloads.md "Confirmed upstream
-// behavior" for the empirical evidence. `normalizeCrawl4AIArgs` is the
-// single choke point that canonicalizes both config keys into the wrapped
-// form the pinned image's own `dump()`/`load()` uses, and fails fast on a
-// forbidden field instead of letting Web Tools emit a request the image
-// will reject.
+// docs/ARCHITECTURE.md, "Crawl4AI Config Contract" (under Runtime Services →
+// Crawl4AI), for the empirical evidence and the forbidden-field lists.
+// `normalizeCrawl4AIArgs` is the single choke point that canonicalizes both
+// config keys into the wrapped form the pinned image's own `dump()`/`load()`
+// uses, and fails fast on a forbidden field instead of letting Web Tools
+// emit a request the image will reject.
 
 export type Crawl4AIConfigTypeName = 'BrowserConfig' | 'CrawlerRunConfig';
 
