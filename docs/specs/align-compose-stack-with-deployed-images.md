@@ -214,15 +214,15 @@ Tear down with `docker compose down` when finished, leaving no containers runnin
 
 ## Tasks
 
-- [ ] Change the `crawl4ai` service in `docker-compose.yml` from `image: unclecode/crawl4ai:latest` to `build: ./services/crawl4ai`, leaving `ports` and `environment` as they are.
-- [ ] Run `docker compose config` and confirm the build context resolves to `services/crawl4ai` and that the resolved `crawl4ai` service carries no `unclecode/crawl4ai` image reference.
-- [ ] Re-read the `crawl4ai` block in `docker-compose.yml` and confirm it has no `image:` key and no `:latest` tag.
-- [ ] Run `docker compose build crawl4ai` and capture the `--- installed playwright browsers ---` guard output.
-- [ ] Run `docker compose up -d redis searxng crawl4ai` from a clean state and confirm all three containers are running.
-- [ ] Issue a crawl against `http://localhost:11235`, capture the successful response, and confirm `docker compose logs crawl4ai` shows no `BrowserType.launch` error. Tear the stack down afterwards.
-- [ ] Update the `RAILWAY.md` "Railway Service Configuration" Crawl4AI row to the confirmed live source (GitHub repo, root directory `services/crawl4ai`).
-- [ ] Extend the `RAILWAY.md` Crawl4AI dependency bullet to name `services/crawl4ai/Dockerfile` as the build source.
-- [ ] Add Crawl4AI to the README "Railway Configuration" section alongside SearXNG, with the reason for the custom image.
-- [ ] Note the first-run local build behavior in README "Start the local stack" / "Or run everything in Docker".
-- [ ] Run `pnpm build`, `pnpm typecheck`, and `pnpm test` and confirm they pass.
-- [ ] Confirm the diff touches only the four files named in the Boundary.
+- [x] Change the `crawl4ai` service in `docker-compose.yml` from `image: unclecode/crawl4ai:latest` to `build: ./services/crawl4ai`, leaving `ports` and `environment` as they are.
+- [x] Run `docker compose config` and confirm the build context resolves to `services/crawl4ai` and that the resolved `crawl4ai` service carries no `unclecode/crawl4ai` image reference.
+- [x] Re-read the `crawl4ai` block in `docker-compose.yml` and confirm it has no `image:` key and no `:latest` tag.
+- [x] Run `docker compose build crawl4ai` and capture the `--- installed playwright browsers ---` guard output.
+- [x] Run `docker compose up -d redis searxng crawl4ai` from a clean state and confirm all three containers are running.
+- [x] Issue a crawl against `http://localhost:11235`, capture the successful response, and confirm `docker compose logs crawl4ai` shows no `BrowserType.launch` error. Tear the stack down afterwards.
+- [x] Update the `RAILWAY.md` "Railway Service Configuration" Crawl4AI row to the confirmed live source (GitHub repo, root directory `services/crawl4ai`).
+- [x] Extend the `RAILWAY.md` Crawl4AI dependency bullet to name `services/crawl4ai/Dockerfile` as the build source.
+- [x] Add Crawl4AI to the README "Railway Configuration" section alongside SearXNG, with the reason for the custom image.
+- [x] Note the first-run local build behavior in README "Start the local stack" / "Or run everything in Docker".
+- [x] Run `pnpm build`, `pnpm typecheck`, and `pnpm test` and confirm they pass.
+- [x] Confirm the diff touches only the four files named in the Boundary.

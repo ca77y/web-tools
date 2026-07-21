@@ -279,6 +279,11 @@ The **SearXNG** service should build from the repo instead of a Docker image:
 - **Root Directory**: `services/searxng`
 - **Optional env var**: `PROXY_URL` — proxy for outgoing search requests (e.g. `socks5://user:pass@host:port`)
 
+The **Crawl4AI** service should also build from the repo instead of a Docker image:
+- **Source**: same GitHub repo
+- **Root Directory**: `services/crawl4ai`
+- **Why**: the custom image repairs the upstream Playwright browser path and pins the Crawl4AI version
+
 ## Quick Start (Local)
 
 ### 1. Clone and install
@@ -301,7 +306,7 @@ cp .env.example .env.local
 docker compose up -d redis searxng crawl4ai
 ```
 
-This starts Redis, SearXNG, and Crawl4AI. Then run the server:
+This starts Redis, SearXNG, and Crawl4AI. The first run builds the SearXNG and Crawl4AI images locally instead of pulling them, so it takes noticeably longer than a pull — this is expected, not a hang. On Apple Silicon or other arm64 hosts, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` before this command: the Crawl4AI image's Playwright browser-binary check only resolves on amd64, and Docker will build it under emulation. Then run the server:
 
 ```bash
 SEARXNG_URL=http://localhost:8080 CRAWL4AI_URL=http://localhost:11235 pnpm run start
@@ -314,6 +319,8 @@ The server is available at `http://localhost:3000`.
 ```bash
 docker compose up
 ```
+
+As with step 3, the first run builds the SearXNG and Crawl4AI images locally before starting, so expect several minutes on a cold cache. On arm64 hosts, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` first, for the same reason as step 3.
 
 ## Environment Variables
 
