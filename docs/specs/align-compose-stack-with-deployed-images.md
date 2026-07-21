@@ -63,11 +63,12 @@ A local Compose stack that runs the same repaired, version-pinned Crawl4AI image
 
 ### `docker-compose.yml`
 
-Replace the `image:` line of the `crawl4ai` service with a `build:` directive pointing at the service directory, leaving `ports` and `environment` untouched:
+Replace the `image:` line of the `crawl4ai` service with a `build:` directive pointing at the service directory, leaving `ports` and `environment` untouched. A later integration-review finding (see Validation) added a `platform: linux/amd64` pin, since the image is amd64-only and Compose applies a service's `platform` to both its build and its runtime:
 
 ```yaml
   crawl4ai:
     build: ./services/crawl4ai
+    platform: linux/amd64
     ports:
       - "11235:11235"
     environment:
@@ -124,10 +125,21 @@ Files this unit must not change: `services/crawl4ai/Dockerfile`, anything under 
 
 Run in this order from the repository root of the unit's worktree. `qa` must run all of them; the runtime scenarios need a working Docker daemon, which is available in this environment (Docker 29.4.0, Compose v5.1.2).
 
+The commands below have preconditions that are not stated elsewhere in this file. One applies only on arm64 hosts; the other two apply on any host:
+
+Arm64 hosts (e.g. Apple Silicon):
+
+- No `DOCKER_DEFAULT_PLATFORM` export is needed. `docker-compose.yml` pins the `crawl4ai` service to `platform: linux/amd64`; this was verified empirically (fresh `docker rmi` of both the built image and the `unclecode/crawl4ai:0.9.1` base, then `docker compose build --no-cache crawl4ai` with `DOCKER_DEFAULT_PLATFORM` unset in the shell) to pull the amd64 base and pass the browser-binary guard on its own.
+
+Any host:
+
+- `CRAWL4AI_API_TOKEN` must be exported in the shell before any `docker compose up`/`build` invocation that starts the containers, e.g. `export CRAWL4AI_API_TOKEN=<token>`. Setting it only in `.env.local` has no effect on the `crawl4ai` service — that file is wired via `env_file:` to `web_tools` only, and `docker compose config` confirms `CRAWL4AI_API_TOKEN` still resolves empty for `crawl4ai` when it is set solely in `.env.local`. Without the shell export, the container's entrypoint binds Crawl4AI to `127.0.0.1` inside its own network namespace, and its published host port refuses connections — verified by `curl` returning "Empty reply from server" against the published port with the token unset, then succeeding once the token was exported and the container recreated. The reverse also holds: `web_tools` reads `CRAWL4AI_API_TOKEN` only via its `env_file: .env.local`, not from the shell (verified: adding a plain or defaulted `CRAWL4AI_API_TOKEN` entry to `web_tools`'s own `environment:` block, so it would pick up the shell export, instead made Compose's `environment:` precedence blank the value whenever the shell var was unset, silently discarding whatever `.env.local` held — confirmed both via `docker compose config` and a minimal `alpine` reproduction, so that approach was reverted). For the full `docker compose up` stack (README step 4) to authenticate `web_tools` against Crawl4AI, the same token value must therefore be set in **both** places: exported in the shell, and present in `.env.local`.
+- If host port `11235` is already bound by another process or worktree's container, use a temporary, untracked `docker-compose.override.yml` with `ports: !override` (the plain list-merge form appends rather than replaces) to remap it, and delete the override file afterwards.
+
 1. `docker compose config` — the merged configuration parses and resolves the build context.
 2. `docker compose build crawl4ai` — the custom image builds and its final binary guard passes.
 3. `docker compose up -d redis searxng crawl4ai` from a clean state, then `docker compose ps`.
-4. A live crawl against `http://localhost:11235` (see the scenario below).
+4. A live crawl against `http://localhost:11235` (see the scenario below) — requires the `Authorization: Bearer <CRAWL4AI_API_TOKEN>` header once a token is set.
 5. `docker compose logs crawl4ai` — no Playwright browser-launch error.
 6. `pnpm build`, `pnpm typecheck`, and `pnpm test` — must still pass, confirming this unit changed nothing in the TypeScript packages. No `Dockerfile`, compose file, or CI config names `docker-compose.yml` as a build input, so there is no further consumer to build through.
 

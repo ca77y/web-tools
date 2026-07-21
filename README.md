@@ -308,9 +308,11 @@ docker compose up -d redis searxng crawl4ai
 
 This starts Redis, SearXNG, and Crawl4AI.
 
-**First run only:**
-- The SearXNG and Crawl4AI images build locally instead of pulling, so it takes noticeably longer than a pull — this is expected, not a hang.
-- On Apple Silicon or other arm64 hosts, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` before the command above: the Crawl4AI image's Playwright browser-binary check only resolves on amd64, and Docker will build it under emulation.
+**Before the stack is usable for crawls:** export `CRAWL4AI_API_TOKEN` in your shell before the command above, e.g. `export CRAWL4AI_API_TOKEN=<token>` — setting it only in `.env.local` does not reach the `crawl4ai` service (that file is wired to `web_tools` only). Without a token, Crawl4AI binds `127.0.0.1` inside its own container and its published port refuses connections from the host, so `pnpm run start` below still boots, but every `web_fetch`, crawl, screenshot, PDF, and JavaScript-execution request fails.
+
+**First run only:** the SearXNG and Crawl4AI images build locally instead of pulling, so it takes noticeably longer than a pull — this is expected, not a hang.
+
+The Crawl4AI image is amd64-only (its Playwright browser-binary check only resolves on amd64). `docker-compose.yml` pins the `crawl4ai` service to `platform: linux/amd64`, so Compose builds and runs it under emulation automatically on Apple Silicon or other arm64 hosts — no extra configuration needed, though emulated builds and requests run slower than native.
 
 Then run the server:
 
@@ -326,7 +328,7 @@ The server is available at `http://localhost:3000`.
 docker compose up
 ```
 
-As in step 3, the first run builds the images locally before starting, so expect several minutes on a cold cache. On arm64 hosts, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` first — see step 3 for why.
+As in step 3, the first run builds the images locally before starting, so expect several minutes on a cold cache. Unlike step 3, `web_tools` now runs in its own container, which reads `CRAWL4AI_API_TOKEN` only from `.env.local` (via `env_file`), not from your shell — while Crawl4AI itself still reads the token only from your shell. So before this command, set the same value in **both** places: uncomment and set `CRAWL4AI_API_TOKEN` in `.env.local`, and also `export CRAWL4AI_API_TOKEN=<token>` in your shell. Skipping either leaves `web_tools` unable to authenticate with Crawl4AI, or Crawl4AI unreachable altogether. Apple Silicon and other arm64 hosts need no extra configuration — see step 3 for why.
 
 ## Environment Variables
 
