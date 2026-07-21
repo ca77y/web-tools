@@ -1,6 +1,6 @@
 # Unexplained repeated `GET /mcp` 405 responses
 
-**Status:** open, no solution identified on our side
+**Status:** open — the historical traffic stays unattributable, but the logging gap that blocked attribution is closed; awaiting a recurrence to read a user agent from
 **First recorded:** 2026-07-12 · **Last recorded:** 2026-07-18
 **Component:** `packages/api` (`GET /mcp` handler)
 
@@ -54,7 +54,11 @@ This is correct for the transport we run. The API mounts `StreamableHTTPServerTr
 
 ## Why no solution could be identified
 
-The blocker is evidential, not technical. **The application logs no request metadata**, so the requests cannot be attributed to a source. `packages/api/src/index.ts` has no request-logging middleware at all; the only startup and error lines come from the bare `log` helper at `:17-21`. The platform's HTTP log line (`GET /mcp 405 1ms`) carries no user agent, no client IP, and no request ID.
+The blocker was evidential, not technical. At the time of the investigation **the application logged no request metadata**, so the requests could not be attributed to a source: `packages/api/src/index.ts` had no request-logging middleware at all, and the platform's HTTP log line (`GET /mcp 405 1ms`) carries no user agent, no client IP, and no request ID.
+
+**That gap is now closed for new traffic.** `request-correlation-logging` has shipped, and the API emits one `http_request` record per inbound request carrying `requestId`, `method`, `path`, `status`, `durationMs`, and `userAgent` (see [`../ARCHITECTURE.md`](../ARCHITECTURE.md) "Inbound request records"). The middleware is mounted before the auth middleware, so the 403-rejected requests are logged too — which matters here, because the finding in point 3 below rests on separating authenticated 405s from unauthenticated 403s.
+
+The historical 52 recorded responses remain unattributable: they predate the logging and no user agent was captured for them. The disposition below therefore still depends on observing the traffic recur, not on re-reading old logs.
 
 Without a user agent or source identity there is no way to decide between the two remaining hypotheses — and the correct fix differs completely depending on which is true:
 
@@ -70,13 +74,13 @@ Before treating an application change as the only path forward, one cheaper aven
 
 ## What would unblock this
 
-If the platform retains no source fields, story [`../tasks/request-correlation-logging.md`](../tasks/request-correlation-logging.md) adds per-request logging that includes the user agent. Once that ships, re-examine the retained `GET /mcp` 405 traffic:
+The per-request logging this note was waiting on has shipped, so the remaining work is observation rather than implementation:
 
 1. Confirm the requests are still occurring.
-2. Read the user agent and request source from the new structured request logs.
+2. Read the user agent from the `http_request` records for `GET /mcp` responses with `status` 405.
 3. Decide the disposition — expected client behavior to document and exclude from the error-rate metric, or a misconfigured caller to correct.
 
-This note should be closed or replaced with an implementation story at that point.
+This note should be closed or replaced with an implementation story once step 2 yields a user agent. If the traffic has stopped, it cannot be attributed at all and the note should be closed as unresolvable rather than left open indefinitely.
 
 ## References
 
@@ -84,4 +88,4 @@ This note should be closed or replaced with an implementation story at that poin
 - `packages/toolkit/src/crawl4ai.ts` (the only outbound MCP client we own)
 - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — Package Boundaries, Request Flows (MCP), Authentication And Trust
 - [`../PRODUCT.md`](../PRODUCT.md) — Principle 5, Phase 3 (Operable Service)
-- [`../tasks/request-correlation-logging.md`](../tasks/request-correlation-logging.md) — the story that would supply the missing evidence
+- [`../ARCHITECTURE.md`](../ARCHITECTURE.md) — "Inbound request records", the shipped `http_request` logging that supplies the previously missing user agent

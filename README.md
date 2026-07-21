@@ -334,6 +334,22 @@ On Railway, the key is auto-generated at deploy time (via `${{secret()}}`). For 
 
 Clients provide the key as a `Bearer` token in the `Authorization` header or as an `?api_key=` query parameter. The `/health` endpoint is unauthenticated.
 
+## Request Correlation
+
+Any HTTP request — MCP or REST — may carry an `X-Request-Id` header. The server adopts it and tags every log line produced while serving that request with the same ID, so you can trace one call end to end across the API, SearXNG, and Crawl4AI:
+
+```bash
+curl -X POST https://your-server.up.railway.app/api/v0/web_fetch \
+  -H "Authorization: Bearer your-api-key" \
+  -H "X-Request-Id: my-trace-001" \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}'
+```
+
+If you send no `X-Request-Id`, the server mints one. An adopted value is treated as untrusted input: it is capped at 200 characters and stripped of anything outside `A-Z a-z 0-9 . _ : -`, so the ID appearing in the logs may be a cleaned-up version of what you sent. If nothing survives cleaning, a fresh ID is minted instead.
+
+Logs are single-line JSON on **stderr** — one record per inbound request, one per tool call, and one or more per upstream call. When a Crawl4AI-backed tool fails, the request ID is also included in the error text returned to you, so a user-reported error string can be traced back to its log lines. Target URLs are logged as scheme, host, and path only: query strings, credentials, script bodies, and API keys are never written to a log line.
+
 ## License
 
 MIT

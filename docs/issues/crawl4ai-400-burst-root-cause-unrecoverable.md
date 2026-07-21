@@ -1,6 +1,6 @@
 # Crawl4AI HTTP 400 burst of 2026-07-18: root cause not recoverable
 
-Status: investigated, no fix identified for the historical incident. Forward-looking work is tracked by three story cards linked at the bottom.
+Status: investigated, no fix identified for the historical incident, which remains unrecoverable. The observability gap that made it unrecoverable is closed for future occurrences — see [The forward-looking gap is now closed](#the-forward-looking-gap-is-now-closed). Remaining forward-looking work is tracked by the story cards linked at the bottom.
 
 ## The problem
 
@@ -52,7 +52,19 @@ Attribution would require at least one of the following, and none exists:
 
 Timestamp-only correlation also fails: multiple 400s landed within the same second, so even if Web Tools had logged bare timestamps, the mapping from call to rejection would be ambiguous.
 
-The retained logs are the only evidence, the incident window has passed, and the observability needed to explain it did not exist while it was happening. The specific requests that caused these 72 rejections are therefore **not recoverable**. A future recurrence will be diagnosable once `request-correlation-logging` ships; this note exists so the gap is not mistaken for an unexamined problem.
+The retained logs are the only evidence, the incident window has passed, and the observability needed to explain it did not exist while it was happening. The specific requests that caused these 72 rejections are therefore **not recoverable**. This note exists so the gap is not mistaken for an unexamined problem.
+
+## The forward-looking gap is now closed
+
+`request-correlation-logging` has shipped. The historical incident stays unrecoverable — nothing about it is retroactively diagnosable — but a recurrence now is. Web Tools emits, for every Crawl4AI call:
+
+- a `crawl4ai_request_shape` record **before** dispatch, mapping the outgoing argument's top-level keys to type tokens, so a request the upstream bridge rejects without explanation still has a Web Tools record of what was sent;
+- a `crawl4ai_dispatch` record with outcome and duration, and — for the five tools that route through `proxyCrawl4AI` — a `crawl4ai_call` record naming the sanitized target URL and `targetUrlCount`;
+- a `requestId` shared by every record from the originating call, plus the inbound `http_request` record naming method, path, status, and user agent.
+
+That answers, for any future burst, three of the five questions listed under *What remains unknown*: which tool produced the requests, which interface originated them, and which target hosts were involved. Timestamp ambiguity within a single second is no longer a blocker, because correlation is by ID rather than by clock. See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) "Structured Logging And Request Correlation".
+
+Two caveats, stated so the coverage is not overclaimed. The upstream `POST http://127.0.0.1:11235/crawl "HTTP/1.1 400 Bad Request"` line still carries no correlation ID of its own — the match to a Web Tools record is by timestamp plus target host plus argument shape, not by a shared identifier, because that log format is fixed by third-party code we do not author. And a multi-URL `web_crawl` logs only its first target plus a count, so a rejection inside such a call narrows to the call, not to the individual URL.
 
 ## What remains unknown
 
@@ -66,4 +78,4 @@ The retained logs are the only evidence, the incident window has passed, and the
 
 - [`../tasks/normalize-crawl4ai-config-payloads.md`](../tasks/normalize-crawl4ai-config-payloads.md) - fixes mechanism 1.
 - [`../tasks/validate-tool-inputs-at-transport-boundary.md`](../tasks/validate-tool-inputs-at-transport-boundary.md) - fixes mechanism 2.
-- [`../tasks/request-correlation-logging.md`](../tasks/request-correlation-logging.md) - adds request IDs, structured logs, and the outgoing Crawl4AI argument-shape summary that makes any recurrence attributable.
+- `request-correlation-logging` - **shipped.** Added request IDs, structured logs, and the outgoing Crawl4AI argument-shape summary that makes any recurrence attributable; see the section above.

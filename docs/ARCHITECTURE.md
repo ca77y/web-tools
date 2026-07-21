@@ -32,6 +32,7 @@ The toolkit owns the public tool model and all provider-facing behavior:
 - Normalized output types
 - Process-local call, bandwidth, and estimated-cost counters
 - Environment-derived provider configuration
+- The shared structured logger and the request-correlation context, re-exported for the transport adapters
 
 No toolkit function depends on Express or Commander. Provider protocol changes should be absorbed here without requiring transport-specific fixes.
 
@@ -40,6 +41,7 @@ No toolkit function depends on Express or Commander. Provider protocol changes s
 The API package adapts HTTP requests to toolkit calls:
 
 - Express application and JSON parsing
+- Request-correlation and inbound request logging middleware, mounted after JSON parsing and before authentication
 - API-key middleware
 - Stateless Streamable HTTP MCP handling at `POST /mcp`
 - REST discovery at `GET /api/v0`
@@ -159,7 +161,13 @@ The API reads a bearer token from `Authorization` or an `api_key` query paramete
 
 The API key protects access to the service; it does not make arbitrary target URLs trustworthy. URLs, scripts, crawler configuration, and upstream responses remain untrusted input and must be validated or constrained at their boundary.
 
-Do not log API keys, full secrets, or sensitive target content. Preserve upstream status and diagnostic context only when safe to return.
+Do not log API keys, full secrets, or sensitive target content. Preserve upstream status and diagnostic context only when safe to return. The safe-value rules that enforce this are documented under [Structured Logging And Request Correlation](#structured-logging-and-request-correlation); they are applied centrally in the log writer rather than at each call site, so a new field cannot opt out of redaction by omission.
+
+### Request correlation identity
+
+Callers may supply an `X-Request-Id` request header on any HTTP request. The API adopts it when present and otherwise mints a UUID, then carries it through the toolkit for the lifetime of the request so every record emitted for that request shares one `requestId`.
+
+An inbound `X-Request-Id` is untrusted caller input. It is capped at 200 characters and stripped of everything outside `[A-Za-z0-9._:-]`; if nothing survives, a fresh ID is minted. Newlines therefore cannot survive adoption, so a hostile header can neither forge a log line nor grow log volume without bound.
 
 ## Failure Model
 
@@ -174,6 +182,46 @@ Failures can originate in five layers:
 Each layer should preserve enough context for the caller to distinguish failure from a legitimate empty result. The toolkit should normalize provider errors, while transports should preserve appropriate protocol status instead of returning successful empty payloads.
 
 Retries must be bounded and limited to operations known to be safe. Cancellation and timeout signals should propagate through the toolkit to provider clients where supported.
+
+### Structured Logging And Request Correlation
+
+One shared logger in `packages/toolkit/src/logging.ts` serves the toolkit and both transport adapters. There is no second logging path: `packages/api` and `packages/cli` import it rather than writing their own. Every record is a single line of JSON written to **stderr** only, so CLI stdout stays machine-parseable.
+
+#### Record kinds
+
+A top-level `kind` field discriminates exactly two record types, and `kind` carries no other meaning anywhere in the repository:
+
+- `kind: "event"` — diagnostic or lifecycle records with no measurable outcome: process startup and shutdown, transport errors, and pre-dispatch summaries.
+- `kind: "operation"` — anything with a measurable outcome. Every operation record carries `requestId`, `operation`, `outcome`, and `durationMs`. `outcome` is exactly one of `ok`, `empty`, or `error`; there is no `failed` token in the log vocabulary.
+
+Not every operation record uses all three outcome values. `tool_call` (the wrapper around each public tool), `crawl4ai_dispatch`, and `http_request` derive their outcome from whether the result carries an error, so they report only `ok` or `error`. `empty` is reported by the records that can actually distinguish it: `crawl4ai_call` for an upstream reply with no extractable text, and `searxng_attempt_outcome` and `search_complete` for a genuine no-match.
+
+All records also carry `ts`, `event`, and `level` (`info`, `warn`, or `error`; an operation record's level follows its `outcome`).
+
+```json
+{"ts":"2026-07-21T10:00:00.000Z","event":"crawl4ai_call","operation":"crawl4ai.crawl","outcome":"error","durationMs":31204,"targetUrl":"https://example.com/a/b","requestId":"3f2a…","kind":"operation","level":"error"}
+```
+
+#### Correlation
+
+The correlation ID is carried ambiently through `node:async_hooks` `AsyncLocalStorage`, not as a parameter, so no public tool signature exposes it. The API middleware adopts or mints the ID (see [Request correlation identity](#request-correlation-identity)) and runs the rest of the request inside that context.
+
+Context-free callers — the CLI and direct toolkit use — get a context per operation instead: all nine public tool functions route through one `runOperation()` wrapper that joins the ambient context if one exists, mints one otherwise, times the call, and emits the `tool_call` operation record. Concentrating it there is what makes "every operation record carries a `requestId`" true on every path rather than only the HTTP one. The wrapper never alters a tool's return value or its thrown error: a throw is recorded as `outcome: "error"` and rethrown unchanged.
+
+#### Safe values
+
+Redaction is enforced in the writer, applied to every field of every record including nested ones, so no call site can opt out by omission:
+
+- **URL redaction** — any URL-shaped substring in any string field is reduced to scheme, host, and path. Userinfo, query string, and fragment are dropped.
+- **Target URLs** — logged as scheme + host + path only (path truncated to 200 characters), alongside a boolean recording whether a query string was present and a `targetUrlCount`. A value that does not parse as a URL is reported as `(unparseable)` rather than echoed. A multi-URL `web_crawl` logs its first target plus the count; per-URL attribution inside one crawl is not provided.
+- **Bounds** — string values are truncated to 500 characters with an explicit truncation marker, arrays are capped at 25 items, and recursion into nested values stops at depth 4.
+- **Crawl4AI argument shape** — before dispatch, a values-free `crawl4ai_request_shape` record maps each **top-level** argument key to a type token (`string`, `number`, `boolean`, `null`, `object`, or `array[N]`). Nesting is never descended, which is what structurally prevents proxy credentials (nested under `browser_config`) and script bodies from leaking. Emitting it *before* dispatch is deliberate: an upstream that rejects a request without telling us anything can only be diagnosed if our own record already exists.
+
+Never logged: API keys, the `api_key` query value, the `Authorization` header value, proxy credentials, script bodies, request or response bodies, and target-URL query strings. The API request middleware logs `req.path` and never `req.originalUrl`, `req.url`, `req.query`, or `req.headers` wholesale — `originalUrl` can itself carry the `api_key` query parameter.
+
+#### Log volume
+
+Successful calls now log where they previously did not: one record per inbound API request, one `tool_call` per tool operation, and one per SearXNG attempt plus one `search_complete` summary. A Crawl4AI-backed call adds two records at the dispatch layer (`crawl4ai_request_shape` before dispatch and `crawl4ai_dispatch` after), plus a third `crawl4ai_call` record carrying the target-URL context for the five tools that route through the proxy wrapper — `web_archive` reaches Crawl4AI directly and so gets the two dispatch-layer records only. All values are bounded by the truncation rules above. There is no log level filter, sampling, or `LOG_LEVEL` knob.
 
 ### Search Failure Classification
 
@@ -201,7 +249,13 @@ The second rule is a deliberate trade-off. `SEARXNG_ENGINES` is blank in the def
 
 #### Reporting and observability
 
-Each attempt emits exactly one single-line JSON record to stderr under the stable event name `searxng_attempt_outcome`, carrying the attempt number, the classification, and either the safe failure reason or result counts. Neither logs nor error messages contain API keys, secrets, or raw upstream response bodies.
+Each attempt emits exactly one record under the stable event name `searxng_attempt_outcome`, following the repository-wide contract in [Structured Logging And Request Correlation](#structured-logging-and-request-correlation). It carries `requestId`, a per-invocation `searchId`, the `attempt` number, the `query`, the SearXNG `baseUrl`, the upstream `status` where one exists, `durationMs`, and either the safe failure reason or result counts. The attempt classification is reported in the uniform `outcome` field as `ok`, `empty`, or `error` — the internal `failed` classification above is code, not a log contract, and maps to `error` at emit time. A timeout omits `status` rather than inventing one.
+
+The `searchId` is what makes the parallel fan-out readable. `web_search` issues `Config.parallelRequests` simultaneous identical attempts, so without it three interleaved lines from one search are indistinguishable from three sequential retries, and lines from two concurrent searches interleave with nothing to separate them. Attempts of one search share a `searchId` and carry distinct `attempt` values; attempts of two concurrent searches carry distinct `searchId` values even under one `requestId`.
+
+One `search_complete` record is emitted per `searchSearXNG` call, carrying the outcome the caller actually received, the winning attempt where one exists, `resultCount`, and `failedAttempts` — so an operator reading a failed attempt line can immediately tell whether the caller was still served.
+
+Neither logs nor error messages contain API keys, secrets, or raw upstream response bodies.
 
 A total search failure is recorded in the process-local counters as an errored call, so outages stay visible at `GET /stats` and through `web_usage_stats` instead of being indistinguishable from successful zero-result searches.
 
@@ -212,6 +266,14 @@ Transports surface the thrown error without adding search-specific behavior: MCP
 `GET /health` currently proves that the API process can answer an HTTP request. It does not prove that Crawl4AI, SearXNG, Redis, target websites, or Wayback Machine are healthy.
 
 `GET /stats` and `web_usage_stats` expose the same process-local counters. They reset on restart and are suitable for lightweight inspection, not durable accounting, billing, or historical monitoring.
+
+### Inbound request records
+
+Every inbound HTTP request emits exactly one `http_request` operation record carrying `requestId`, `method`, `path`, `status`, `durationMs`, and `userAgent` (`null` when the caller sent no `User-Agent`). Unlike the counters above, these records are not process-local state — they are the per-request evidence trail that makes traffic attributable to a source.
+
+The middleware is mounted immediately after JSON parsing and **strictly before** the authentication middleware. Auth rejects a request with 403 by terminating the chain without calling `next()`, so mounting the logger after auth would silently drop every rejected request — exactly the traffic that most needs attributing. Rejected requests are logged with their status, `outcome: "error"`, and their user agent.
+
+This complements rather than duplicates the hosting platform's own HTTP log, which carries no user agent, client IP, or request ID.
 
 ## Testing
 

@@ -68,11 +68,11 @@ Both trade a genuine correctness property for a monitoring convenience. Neither 
 
 Correct MCP behavior and HTTP-status-based failure monitoring are not reconcilable on the `/mcp` route. Operators who need to detect tool-level failure should not rely on `/mcp` HTTP status. The supported paths are:
 
-- Structured application logs carrying operation, outcome, and provider - tracked by [`../tasks/request-correlation-logging.md`](../tasks/request-correlation-logging.md).
+- Structured application logs carrying operation, outcome, and duration — **available.** `request-correlation-logging` has shipped, so every tool call emits a `tool_call` operation record with `operation`, `outcome`, `durationMs`, and a `requestId` shared with the inbound `http_request` record. A monitor that reads stderr can detect tool-level failure on the `/mcp` route without parsing the JSON-RPC envelope. Note that `tool_call`'s `outcome` is `ok` or `error` only — it is derived from whether the result carries `isError`. A monitor that needs to separate a genuine empty result from a failure must read the records that do report `empty`: `search_complete` and `searxng_attempt_outcome` for `web_search`, and `crawl4ai_call` for the Crawl4AI-backed tools. See [`../ARCHITECTURE.md`](../ARCHITECTURE.md) "Structured Logging And Request Correlation". None of this makes the HTTP *status* carry the outcome — the constraint this note describes is unchanged; it supplies a different signal alongside it.
 - A dependency-aware health or readiness endpoint - tracked by [`../tasks/health-liveness-readiness-split.md`](../tasks/health-liveness-readiness-split.md).
 - Monitoring the REST route, where status codes do carry the outcome once [`../tasks/distinguish-search-failure-from-empty-results.md`](../tasks/distinguish-search-failure-from-empty-results.md) lands.
 
-Both of the first two belong to Phase 3 of [`../PRODUCT.md`](../PRODUCT.md).
+The second of these belongs to Phase 3 of [`../PRODUCT.md`](../PRODUCT.md).
 
 Revisit if a future MCP specification revision defines a transport-level signal for tool failure.
 </content>

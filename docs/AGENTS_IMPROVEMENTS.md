@@ -29,6 +29,14 @@ Add an entry only when a specific pipeline, agent, or skill improvement is disco
 **Suggested change**: extend the shared paragraph with a checkout rule — "when you were given a worktree to work in, resolve the documentation area inside *that* worktree; never write to the repository root checkout" — and have the `lead` state the worktree path as the writable root when it dispatches. Leaving the base-branch checkout clean is a safety rule the subagents currently have no way to know about.
 
 
+### A re-audit verifying a prior round's fix must resolve the finding against the file the finding cited
+
+**Area**: agent:auditor
+
+**Observed**: during the `request-correlation-logging` docs pass, round 1 raised a minor finding against the boundary bullet list in `docs/ARCHITECTURE.md:23-34`. The fix was applied there and round 2 verified the new bullet present at `docs/ARCHITECTURE.md:35` — then, in the same report, looked for the same bullet in `packages/CLAUDE.md`, a file round 1 never named and which was explicitly out of bounds for a documentation-only pass, and escalated it to **must-fix** as "claimed fixed but was never applied". A verifiably-applied item was reported as a false claim by the writer. That is the most expensive class of false positive: it impugns the previous round's honesty, and it cost a full extra audit round to adjudicate and discard. Round 3 agreed the discard was correct.
+
+**Suggested change**: when re-auditing a prior round's fixes, resolve each finding against the exact file and line the original finding cited before judging whether it was applied; if the property seems to also apply elsewhere, raise that as a *new* finding at its own severity rather than as a not-applied verdict on the old one. And never grade a fix as missing in a file the pass was not permitted to modify — check the stated out-of-bounds list first, and route such items to the lead as out-of-scope.
+
 ### The code-review skill is written for GitHub PRs, but the pipeline invokes it on uncommitted worktree diffs
 
 **Area**: skill:code-review
