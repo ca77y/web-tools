@@ -5,21 +5,25 @@
  * the TTL cache / single-flight behaviour, the rollup, and the closed
  * detail set.
  *
- * Crawl4AI is deliberately never reachable in this file: its probe target
- * is a synthetic `fetch` stub that always answers a clean, immediately
- * resolved non-2xx response for anything that isn't the SearXNG health
- * path. This is a deliberate safety choice, not a shortcut — verified
- * against the installed `eventsource` package (the dependency behind the
- * MCP SDK's `SSEClientTransport`): a *rejected* or hung `fetch` (a truly
- * refused connection, or one that never settles) makes the transport
- * schedule an internal reconnect every ~3s *forever*, with no way to stop
- * it from outside `getClient()` (which this story must not restructure).
- * That would leak an unbounded background timer and could keep
- * `node --test` from ever exiting. A synchronous non-200 HTTP response
- * instead hits the transport's permanent-failure path (one error event,
- * no retry): fast, deterministic, and leak-free. The genuinely-reachable
- * ("both dependencies ok") case is covered in
- * `packages/api/src/ready.test.ts` against a real fake MCP SSE server.
+ * Crawl4AI is never genuinely *reachable* in this file: its probe target
+ * is a synthetic `fetch` stub, and building a fake MCP SSE peer that can
+ * answer `tools/list` needs a real server (covered in
+ * `packages/api/src/ready.test.ts` and
+ * `packages/toolkit/src/crawl4ai-probe.test.ts`). Most scenarios here
+ * route Crawl4AI to a clean, immediately resolved non-2xx response
+ * (`stubFetch`'s default) since they only care that it is *not ok*, not
+ * how it failed.
+ *
+ * The reconnect-loop scenario below is the exception: it deliberately
+ * routes Crawl4AI's fetch to a genuine rejection (`stubFetchBoth`), the
+ * production path a refused connection actually takes. Before
+ * `resetClient()` existed (see `crawl4ai.ts`'s post-integration-review
+ * amendment), that path made `eventsource`'s internal reconnect loop run
+ * every ~3s *forever* with no way to stop it, so this file avoided it
+ * entirely to keep `node --test` from hanging. `resetClient()` now closes
+ * the abandoned transport on every `probeCrawl4AI` failure branch,
+ * including a connect-level timeout, so this is safe to exercise
+ * directly.
  *
  * `checkReadiness()` keeps module-level cache/in-flight state, so each
  * test that needs a cold cache dynamically re-imports readiness.ts with a
@@ -47,14 +51,15 @@ function cleanResponse(status: number): Response {
 }
 
 /**
- * Routes every `fetch` call: a request to SearXNG's `/healthz` probe path
- * is handed to `searxngResponder`; everything else (Crawl4AI's MCP SSE
- * probe, which also goes through `fetch` via its `eventSourceInit.fetch`
- * hook) gets an immediate, clean 404 — see the file header for why this
- * must never be a rejection or a hang.
+ * Routes every `fetch` call to one of two independently controllable
+ * responders: a request to SearXNG's `/healthz` probe path goes to
+ * `searxngResponder`; everything else (Crawl4AI's MCP SSE probe, which
+ * also goes through `fetch` via its `eventSourceInit.fetch` hook) goes to
+ * `crawl4aiResponder`.
  */
-function stubFetch(
+function stubFetchBoth(
   searxngResponder: (init?: RequestInit) => Response | Promise<Response>,
+  crawl4aiResponder: (init?: RequestInit) => Response | Promise<Response>,
 ): void {
   globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
     const url =
@@ -66,8 +71,19 @@ function stubFetch(
     if (url.includes('/healthz')) {
       return searxngResponder(init);
     }
-    return cleanResponse(404);
+    return crawl4aiResponder(init);
   }) as typeof fetch;
+}
+
+/**
+ * `stubFetchBoth` with Crawl4AI routed to an immediate, clean 404 — see
+ * the file header for why most scenarios here don't care how Crawl4AI
+ * fails, just that it isn't `ok`.
+ */
+function stubFetch(
+  searxngResponder: (init?: RequestInit) => Response | Promise<Response>,
+): void {
+  stubFetchBoth(searxngResponder, () => cleanResponse(404));
 }
 
 /** Like stubFetch, but also counts calls to the SearXNG health path. */
@@ -169,6 +185,59 @@ test('SearXNG verdict: probeSearXNG own AbortSignal.timeout classifies as timeou
   );
 });
 
+test('SearXNG probe: a response.body.cancel() failure does not change an already-decided ok verdict', async () => {
+  // A hand-built stand-in, not a real Response: probeSearXNG only reads
+  // `.status` and calls `.body?.cancel()`, and this needs that call to
+  // throw *after* the verdict is already computed from `.status` — a real
+  // Response's body.cancel() has no reliable way to be made to throw from
+  // a test.
+  stubFetch(
+    () =>
+      ({
+        status: 200,
+        body: {
+          cancel: () => {
+            throw new Error('cancel failed');
+          },
+        },
+      }) as unknown as Response,
+  );
+  const checkReadiness = await freshCheckReadiness();
+
+  const report = await checkReadiness();
+
+  assert.equal(
+    report.dependencies.searxng.status,
+    'ok',
+    'a cancel() failure must not override a verdict already decided from the response status',
+  );
+  assert.equal(report.dependencies.searxng.detail, undefined);
+});
+
+test('SearXNG probe: a response.body.cancel() failure does not change an already-decided unhealthy verdict', async () => {
+  stubFetch(
+    () =>
+      ({
+        status: 503,
+        body: {
+          cancel: () => {
+            throw new Error('cancel failed');
+          },
+        },
+      }) as unknown as Response,
+  );
+  const checkReadiness = await freshCheckReadiness();
+
+  const report = await checkReadiness();
+
+  assert.equal(report.dependencies.searxng.status, 'unhealthy');
+  assert.equal(
+    report.dependencies.searxng.detail,
+    'http_status:503',
+    'a cancel() failure must not override the http_status detail already decided',
+  );
+});
+
 // ── Timeout bound (readiness.ts's own backstop) ─────────────────────────
 
 test('a hung dependency that ignores its abort signal does not hang the response, and resolves rather than rejects', async () => {
@@ -249,6 +318,54 @@ test('concurrent callers from a cold cache share exactly one probe round', async
   );
   const checkedAts = new Set(reports.map(r => r.checked_at));
   assert.equal(checkedAts.size, 1, 'all six callers see the same report');
+});
+
+// ── Amendment: an outage does not accumulate reconnect loops ───────────
+// (packages/toolkit/src/crawl4ai.ts's `resetClient()`, added after
+// integration review — see the spec's post-integration-review amendment)
+
+test('a genuinely refused Crawl4AI connection stays bounded across several expired TTL windows: no accumulating reconnect loop', async () => {
+  let crawl4aiAttempts = 0;
+  stubFetchBoth(
+    () => cleanResponse(200),
+    () => {
+      crawl4aiAttempts++;
+      // A genuine rejection, not a clean HTTP response: the production
+      // path a refused connection actually takes, and the one that drove
+      // `eventsource`'s reconnect-forever loop before `resetClient()`
+      // existed (see the file header).
+      return Promise.reject(new TypeError('fetch failed'));
+    },
+  );
+  const checkReadiness = await freshCheckReadiness();
+
+  const rounds = 3;
+  for (let i = 0; i < rounds; i++) {
+    const report = await checkReadiness();
+    assert.equal(report.dependencies.crawl4ai.status, 'unhealthy');
+    if (i < rounds - 1) {
+      await new Promise(resolve =>
+        setTimeout(resolve, READINESS_CACHE_TTL_MS + 250),
+      );
+    }
+  }
+
+  const attemptsAfterRounds = crawl4aiAttempts;
+  assert.ok(
+    attemptsAfterRounds >= rounds && attemptsAfterRounds <= rounds + 1,
+    `expected connection attempts bounded by the number of TTL rounds, not runaway retries; got ${attemptsAfterRounds} for ${rounds} rounds`,
+  );
+
+  // eventsource's default reconnect interval is ~3s. If resetClient() had
+  // failed to close what a failed connect abandoned, an orphaned client
+  // would still be quietly retrying here, growing the count with no
+  // further checkReadiness() call from this test.
+  await new Promise(resolve => setTimeout(resolve, 3200));
+  assert.equal(
+    crawl4aiAttempts,
+    attemptsAfterRounds,
+    'no further connection attempts after the probes stopped: no orphaned reconnect loop',
+  );
 });
 
 // ── Rollup values (crawl4ai unreachable throughout this file) ───────────

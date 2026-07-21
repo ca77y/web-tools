@@ -383,14 +383,31 @@ export async function probeSearXNG(
     });
     const latency_ms = Math.max(0, Math.round(performance.now() - start));
 
-    if (response.status >= 500) {
-      return {
-        status: 'unhealthy',
-        latency_ms,
-        detail: `http_status:${response.status}`,
-      };
+    const result: DependencyProbeResult =
+      response.status >= 500
+        ? {
+            status: 'unhealthy',
+            latency_ms,
+            detail: `http_status:${response.status}`,
+          }
+        : { status: 'ok', latency_ms };
+
+    // Release the connection back to the pool: under undici, an
+    // unconsumed body keeps its socket checked out until the
+    // FinalizationRegistry eventually reclaims it, and this probe is
+    // polled for the process lifetime. Mirrors the MCP SDK's own
+    // `await response.body?.cancel()` pattern (used throughout
+    // `@modelcontextprotocol/sdk/dist/esm/client/*.js`). Best-effort and
+    // isolated from the outer catch: a throw here must never override the
+    // verdict already computed above.
+    try {
+      await response.body?.cancel();
+    } catch {
+      // Ignore: the verdict is already decided and must not change
+      // because releasing the connection failed.
     }
-    return { status: 'ok', latency_ms };
+
+    return result;
   } catch (err) {
     const latency_ms = Math.max(0, Math.round(performance.now() - start));
     // AbortSignal.timeout rejects with a DOMException named 'TimeoutError'.

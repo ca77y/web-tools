@@ -27,16 +27,28 @@
  *     giving a genuine client-side network error (safe: a plain `fetch`
  *     never auto-retries);
  *   - the Crawl4AI fake answers a clean, immediate HTTP 503 (never
- *     starting the SSE handshake) when "down". This is deliberate, not
- *     arbitrary: verified against the installed `eventsource` package
- *     (the dependency behind the MCP SDK's `SSEClientTransport`), a
- *     *rejected or hung* fetch (a truly refused connection) makes the
- *     transport schedule an internal reconnect every ~3s *forever*, with
- *     no way to stop it from outside `getClient()` (which this story must
- *     not restructure) — an unbounded background timer that would leak
- *     across tests and could keep `node --test` from ever exiting. A
- *     clean non-200 HTTP response instead hits the transport's
- *     permanent-failure path (one error event, no retry).
+ *     starting the SSE handshake) when "down". `crawl4ai.ts`'s
+ *     `resetClient()` (added by the spec's post-integration-review
+ *     amendment) now closes the transport a *failed connect attempt*
+ *     abandons on every `probeCrawl4AI` failure branch, including a
+ *     connect-level timeout — see `packages/toolkit/src/
+ *     crawl4ai-probe.test.ts` and `readiness.test.ts`, which exercise a
+ *     genuinely refused connection directly and prove that path no longer
+ *     leaks. This file keeps the clean-503 simulation deliberately,
+ *     because it is the one place a **already-connected, later-dropped**
+ *     client is exercised (test 1 below connects successfully; a later
+ *     test then takes Crawl4AI down on the *same*, long-lived module
+ *     instance): `eventsource`'s own normal reconnect-after-stream-ends
+ *     behavior fires in the background for that transition, independent
+ *     of any `probeCrawl4AI` call, so `resetClient()` — wired only into
+ *     `probeCrawl4AI`'s own failure branches — never runs for it. Verified
+ *     directly: switching this fake to a genuine socket-destroy makes the
+ *     suite hang and get force-cancelled after 90s, retrying against the
+ *     refused socket roughly every ~3s forever. That gap is real but out
+ *     of scope for this unit (the amendment authorizes closing
+ *     `resetClient()` into `probeCrawl4AI`'s failure branches only, not
+ *     into `transport.onerror`/`onclose`) and has been escalated rather
+ *     than fixed here.
  */
 import assert from 'node:assert/strict';
 import type { AddressInfo } from 'node:net';
@@ -74,8 +86,8 @@ const crawl4aiTransports = new Map<string, SSEServerTransport>();
 
 crawl4aiApp.get('/mcp/sse', async (req: Request, res: ExpressResponse) => {
   if (!crawl4aiUp) {
-    // A clean non-200 response — see file header for why this must never
-    // be a hang or a rejected connection.
+    // A clean non-200 response — see the file header for why this file
+    // specifically keeps this shape rather than a genuine socket-destroy.
     res.status(503).end();
     return;
   }
