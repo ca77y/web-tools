@@ -27,12 +27,13 @@ const FORBIDDEN_CRAWLER_KEYS = [
   'simulate_user',
 ];
 // Keys absent from the pinned image's UNTRUSTED_FIELD_ALLOWLIST — accepted
-// but silently dropped upstream (probe N).
+// but silently dropped rather than rejected. See docs/ARCHITECTURE.md,
+// "Crawl4AI Config Contract" ("unknown fields are silently dropped").
 const DROPPED_CRAWLER_KEYS = ['js_only', 'semaphore_count'];
 
-// The complete CrawlerRunConfig forbidden set from the spec's Result 2, not
-// only the five the requirement names. The published schema must not
-// advertise any of them, however they got there.
+// The complete CrawlerRunConfig forbidden set from docs/ARCHITECTURE.md's
+// "Crawl4AI Config Contract", not only the five the requirement names. The
+// published schema must not advertise any of them, however they got there.
 const ALL_FORBIDDEN_CRAWLER_KEYS = [
   'base_url',
   'c4a_script',
@@ -162,7 +163,9 @@ describe('WebFetchInput no longer publishes session_id', () => {
     // The requirement is that the *published schema* describes only what is
     // actually accepted. A description telling callers to reuse a
     // `session_id` still advertises a parameter that no longer exists and
-    // that the pinned image rejects with 400 (probe E).
+    // that the pinned image rejects with a 400 — `session_id` is on
+    // CrawlerRunConfig's forbidden list in docs/ARCHITECTURE.md's "Crawl4AI
+    // Config Contract".
     const offenders = Object.entries(WebFetchInput.shape)
       .filter(([, schema]) => (schema.description ?? '').includes('session_id'))
       .map(([key]) => key);
