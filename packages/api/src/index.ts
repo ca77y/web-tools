@@ -1,7 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import express, { Request, Response } from 'express';
-import { Config, getStats, tools } from '@web-tools/toolkit';
+import express, { Express, Request, Response } from 'express';
+import { Config, checkReadiness, getStats, tools } from '@web-tools/toolkit';
 import { createServer } from './mcp.js';
 import { toolHandler } from './handler.js';
 
@@ -22,7 +22,7 @@ const log = (...args: unknown[]) => {
 
 log('Environment check:', { searxngUrl: Config.searxng.url });
 
-const app = express();
+export const app: Express = express();
 app.use(express.json());
 
 // ── Auth middleware (skips /health) ──────────────────────────────────
@@ -109,9 +109,28 @@ for (const tool of tools) {
 }
 
 // ── Health ───────────────────────────────────────────────────────────
+// GET /health is Railway's platform health check path for the `Tools`
+// service (project `Agentic-Search`, environment `production`) — both its
+// deploy gate and its ongoing container check. It MUST stay a pure,
+// dependency-free liveness probe: no network I/O, and always HTTP 200
+// while the process is alive, including when every upstream is
+// unreachable. Making this deep would restart-loop healthy containers and
+// block deploys during an upstream outage. Dependency state belongs to
+// the authenticated GET /ready below instead — do not add dependency
+// checks or new body fields here.
 
 app.get('/health', (_req: Request, res: Response) => {
   res.json({ status: 'ok' });
+});
+
+// ── Readiness ────────────────────────────────────────────────────────
+// GET /ready is the authenticated dependency probe (SearXNG, Crawl4AI).
+// It always answers HTTP 200 — callers read dependency state from the
+// body, never the status code — and must never be configured as a
+// platform health check path; see the comment on GET /health above.
+app.get('/ready', async (_req: Request, res: Response) => {
+  const report = await checkReadiness();
+  res.status(200).json(report);
 });
 
 // ── Stats / cost monitoring ─────────────────────────────────────────
@@ -125,7 +144,7 @@ app.get('/stats', (_req: Request, res: Response) => {
 // ── Start ────────────────────────────────────────────────────────────
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
-app.listen(PORT, () => {
+export const server = app.listen(PORT, () => {
   log(`Web Tools server listening on port ${PORT}`);
   log(`  MCP:    POST /mcp`);
   log(`  API:    POST /api/v0/{tool_name}`);

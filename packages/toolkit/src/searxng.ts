@@ -1,4 +1,5 @@
 import { Config } from './config.js';
+import type { DependencyProbeResult } from './readiness.js';
 import type { SearchResult } from './types.js';
 
 type SearXNGResult = {
@@ -355,6 +356,54 @@ export async function searchSearXNG(
   }
 
   return { data };
+}
+
+/**
+ * Cheap SearXNG reachability probe for `GET /ready`. Issues a single GET
+ * to `${Config.searxng.url}/healthz`, bounded by an explicit timeout —
+ * never `Config.requestTimeout`, which is a 15s per-search budget. This is
+ * a reachability check, not a feature probe, so it never runs a real
+ * query.
+ *
+ * Verdict rule: any HTTP response with status < 500 counts as reachable
+ * (`ok`) — the deployed image tracks the rolling `searxng/searxng:latest`
+ * tag (`services/searxng/Dockerfile`), so `/healthz` is not a
+ * version-pinned contract, and a 404 still proves the SearXNG HTTP server
+ * accepted a connection and answered. Treating 404 as unhealthy would
+ * report a false outage on an image change. Do not tighten this to
+ * `res.ok` without replacing this rationale.
+ */
+export async function probeSearXNG(
+  timeoutMs: number,
+): Promise<DependencyProbeResult> {
+  const start = performance.now();
+  try {
+    const response = await fetch(`${Config.searxng.url}/healthz`, {
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const latency_ms = Math.max(0, Math.round(performance.now() - start));
+
+    if (response.status >= 500) {
+      return {
+        status: 'unhealthy',
+        latency_ms,
+        detail: `http_status:${response.status}`,
+      };
+    }
+    return { status: 'ok', latency_ms };
+  } catch (err) {
+    const latency_ms = Math.max(0, Math.round(performance.now() - start));
+    // AbortSignal.timeout rejects with a DOMException named 'TimeoutError'.
+    // Classify on err.name, not message text, to distinguish a timeout
+    // from a generic network/fetch error — same rule fetchSearXNG uses.
+    const isTimeout =
+      err instanceof DOMException && err.name === 'TimeoutError';
+    return {
+      status: 'unhealthy',
+      latency_ms,
+      detail: isTimeout ? 'timeout' : 'network_error',
+    };
+  }
 }
 
 /** Yields promises in the order they resolve (like Promise.race but iterative). */
