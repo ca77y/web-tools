@@ -1,6 +1,5 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-
 import { Config } from './config.js';
 
 // ── Crawl4AI config normalization ───────────────────────────────────────
@@ -182,25 +181,13 @@ async function getClient(): Promise<Client> {
     }
 
     const transport = new SSEClientTransport(url, {
-      eventSourceInit: {
-        fetch: (url, init) =>
-          fetch(url, {
-            ...init,
-            headers: {
-              ...headers,
-              ...(init?.headers as Record<string, string>),
-            },
-          }),
-      },
+      eventSourceInit: { fetch: (url, init) => fetch(url, { ...init, headers: { ...headers, ...(init?.headers as Record<string, string>) } }) },
       requestInit: { headers },
     });
 
-    const c = new Client({
-      name: 'web_tools_crawl4ai_proxy',
-      version: '1.0.0',
-    });
+    const c = new Client({ name: 'web_tools_crawl4ai_proxy', version: '1.0.0' });
 
-    transport.onerror = err => {
+    transport.onerror = (err) => {
       process.stderr.write(`Crawl4AI transport error: ${err.message}\n`);
       client = null;
       connecting = null;
@@ -232,14 +219,11 @@ async function call(name: string, args: Record<string, unknown>) {
   }
 }
 
-export const callCrawlTool = (args: Record<string, unknown>) =>
-  call('crawl', args);
+export const callCrawlTool = (args: Record<string, unknown>) => call('crawl', args);
 export const callMdTool = (args: Record<string, unknown>) => call('md', args);
-export const callScreenshotTool = (args: Record<string, unknown>) =>
-  call('screenshot', args);
+export const callScreenshotTool = (args: Record<string, unknown>) => call('screenshot', args);
 export const callPdfTool = (args: Record<string, unknown>) => call('pdf', args);
-export const callExecuteJsTool = (args: Record<string, unknown>) =>
-  call('execute_js', args);
+export const callExecuteJsTool = (args: Record<string, unknown>) => call('execute_js', args);
 
 /**
  * Test-only teardown: closes the singleton Crawl4AI MCP client connection,
