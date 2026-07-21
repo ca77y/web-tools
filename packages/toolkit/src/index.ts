@@ -29,6 +29,21 @@ export { Config } from './config.js';
 export { getStats, recordCall } from './stats.js';
 export { SearchProviderError } from './searxng.js';
 
+export {
+  adoptOrMintRequestId,
+  getRequestId,
+  logEvent,
+  logOperation,
+  runInRequestContext,
+  safeUrl,
+  sanitizeRequestId,
+  startTimer,
+  summarizeArgShape,
+  truncate,
+  withRequestContext,
+} from './logging.js';
+export type { OperationFields } from './logging.js';
+
 export type {
   SearchResult,
   SnapshotInfo,
