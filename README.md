@@ -306,7 +306,13 @@ cp .env.example .env.local
 docker compose up -d redis searxng crawl4ai
 ```
 
-This starts Redis, SearXNG, and Crawl4AI. The first run builds the SearXNG and Crawl4AI images locally instead of pulling them, so it takes noticeably longer than a pull — this is expected, not a hang. On Apple Silicon or other arm64 hosts, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` before this command: the Crawl4AI image's Playwright browser-binary check only resolves on amd64, and Docker will build it under emulation. Then run the server:
+This starts Redis, SearXNG, and Crawl4AI.
+
+**First run only:**
+- The SearXNG and Crawl4AI images build locally instead of pulling, so it takes noticeably longer than a pull — this is expected, not a hang.
+- On Apple Silicon or other arm64 hosts, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` before the command above: the Crawl4AI image's Playwright browser-binary check only resolves on amd64, and Docker will build it under emulation.
+
+Then run the server:
 
 ```bash
 SEARXNG_URL=http://localhost:8080 CRAWL4AI_URL=http://localhost:11235 pnpm run start
@@ -320,7 +326,7 @@ The server is available at `http://localhost:3000`.
 docker compose up
 ```
 
-As with step 3, the first run builds the SearXNG and Crawl4AI images locally before starting, so expect several minutes on a cold cache. On arm64 hosts, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` first, for the same reason as step 3.
+As in step 3, the first run builds the images locally before starting, so expect several minutes on a cold cache. On arm64 hosts, set `DOCKER_DEFAULT_PLATFORM=linux/amd64` first — see step 3 for why.
 
 ## Environment Variables
 
