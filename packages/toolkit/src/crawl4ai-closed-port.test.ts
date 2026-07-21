@@ -20,7 +20,25 @@
  */
 import assert from 'node:assert/strict';
 import { createServer as createTcpServer } from 'node:net';
-import { after, afterEach, describe, test } from 'node:test';
+import { after, afterEach, describe, test as nodeTest } from 'node:test';
+
+// Tracks pass/fail independently of node:test's own bookkeeping. The exit
+// path at the bottom of this file cannot rely on `process.exitCode` (it is
+// not yet populated inside a top-level after() hook — verified empirically:
+// node:test only sets it once the whole run, hooks included, has settled)
+// so a failing assertion in this file must not silently report a zero exit
+// code. Every test declared via the `test` shim below counts itself.
+let failureCount = 0;
+function test(name: string, fn: () => void | Promise<void>): void {
+  nodeTest(name, async () => {
+    try {
+      await fn();
+    } catch (err) {
+      failureCount++;
+      throw err;
+    }
+  });
+}
 
 process.env.PROXY_SERVER = 'proxy.example.internal:8080';
 process.env.PROXY_USERNAME = 'proxy-user-should-not-leak';
@@ -111,7 +129,7 @@ afterEach(() => {
 describe('the thrown proxyCrawl4AI path names the target', () => {
   test('a connection failure logs outcome error with the sanitized target and the message as cause, and never throws out of web_crawl', async () => {
     const { lines, result, error } = await captureStderr(() =>
-      web_crawl({ urls: ['https://example.com/a/b'] }),
+      web_crawl({ urls: ['https://example.com/a/b?token=SUPERSECRET'] }),
     );
     assert.equal(
       error,
@@ -126,6 +144,19 @@ describe('the thrown proxyCrawl4AI path names the target', () => {
     assert.equal(rec.targetUrl, 'https://example.com/a/b');
     assert.equal(typeof rec.cause, 'string');
     assert.ok((rec.cause as string).length > 0);
+
+    // Whole-line, not per-field: the closed-port connection failure's own
+    // message doesn't naturally embed the target URL in this codebase
+    // today (it names the Crawl4AI-side address, not the crawled page —
+    // confirmed by inspecting the actual message), but the target URL's
+    // own query string still reaches this path via `targetUrl`'s source
+    // argument, so this is still a meaningful whole-capture check that the
+    // shared sanitizer covers the thrown path too, not just the
+    // isError-response path.
+    for (const line of lines) {
+      assert.ok(!line.includes('SUPERSECRET'), `secret leaked: ${line}`);
+      assert.ok(!line.includes('token='), `query leaked: ${line}`);
+    }
   });
 
   test('the requestId in the caller-visible error text matches the logged record on the thrown path', async () => {
@@ -338,11 +369,19 @@ after(async () => {
   // Every call in this file hits a closed port, so the toolkit's SSE
   // client transport (crawl4ai.ts) never completes its first connection —
   // but the underlying EventSource still auto-retries on its own timer
-  // regardless, with no exposed close() to stop it. Left alone this keeps
-  // this file's dedicated `node --test` child process alive forever.
+  // regardless, with no exposed close() to stop it (confirmed empirically:
+  // even force-unref-ing every active handle here doesn't stop it, because
+  // each retry opens a fresh, ref'd connection attempt). Left alone this
+  // keeps this file's dedicated `node --test` child process alive forever.
   // `node --test` isolates each test file in its own process, so exiting
-  // here only ends this file's run. A short delay lets the test runner
-  // finish reporting the last test's result before the process disappears.
-  await new Promise(resolve => setTimeout(resolve, 100));
-  process.exit(0);
+  // here only ends this file's run, not the sibling files in the suite.
+  //
+  // The exit code is never hard-coded: it reflects `failureCount`, tracked
+  // independently above, so a failing assertion in this file's last test
+  // still produces a non-zero exit rather than being masked by a forced
+  // exit(0). The delay is empirically-derived headroom for the test
+  // runner's own reporter to finish writing out each subtest's result
+  // before the process disappears out from under it.
+  await new Promise(resolve => setTimeout(resolve, 200));
+  process.exit(failureCount > 0 ? 1 : 0);
 });

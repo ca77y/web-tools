@@ -135,6 +135,111 @@ describe('logEvent / logOperation - record shape', () => {
   });
 });
 
+describe('logEvent / logOperation - every field value is sanitized by default', () => {
+  // This is the generic mechanism every call site relies on: rather than
+  // trust each of the (currently five) places that pass raw upstream text
+  // into a field — a Crawl4AI/Playwright error message, an SSE transport
+  // error, a thrown error from any of the nine tools, a SearXNG
+  // unresponsive-engines list — to individually remember to sanitize it,
+  // logEvent()/logOperation() sanitize every field value themselves. A new
+  // field, or a new call site, cannot opt out by omission.
+
+  const secretUrl =
+    'https://user:pw@example.com/a/b?token=SUPERSECRET&api_key=SUPERSECRET2';
+  const realisticMessage = `Page.goto: Timeout 120000ms exceeded. Call log: - navigating to "${secretUrl}", waiting until "load"`;
+
+  test('a secret-bearing URL embedded in an arbitrary string field is redacted on the whole captured line, for logOperation', () => {
+    const { stderr } = captureStreams(() =>
+      logOperation('some_op', {
+        operation: 'thing',
+        outcome: 'error',
+        durationMs: 1,
+        cause: realisticMessage,
+      }),
+    );
+    const line = stderr[0]!;
+    assert.ok(!line.includes('SUPERSECRET'), `secret leaked: ${line}`);
+    assert.ok(!line.includes('SUPERSECRET2'), `secret leaked: ${line}`);
+    assert.ok(!line.includes('user:pw@'), `credentials leaked: ${line}`);
+    assert.ok(!line.includes('token='), `query leaked: ${line}`);
+    const parsed = JSON.parse(line) as Record<string, unknown>;
+    assert.match(parsed.cause as string, /Timeout 120000ms exceeded/);
+    assert.match(parsed.cause as string, /https:\/\/example\.com\/a\/b/);
+  });
+
+  test('the same holds for logEvent, on an arbitrarily-named field (e.g. a transport error "message")', () => {
+    const { stderr } = captureStreams(() =>
+      logEvent(
+        'crawl4ai_transport_error',
+        { message: realisticMessage },
+        'error',
+      ),
+    );
+    const line = stderr[0]!;
+    assert.ok(!line.includes('SUPERSECRET'), `secret leaked: ${line}`);
+    assert.ok(!line.includes('user:pw@'), `credentials leaked: ${line}`);
+    assert.ok(!line.includes('token='), `query leaked: ${line}`);
+  });
+
+  test('a value already safe (no embedded URL, well within bounds) passes through unchanged', () => {
+    const { stderr } = captureStreams(() =>
+      logOperation('some_op', {
+        operation: 'thing',
+        outcome: 'ok',
+        durationMs: 1,
+        baseUrl: 'http://searxng.railway.internal:8080',
+        note: 'short and plain',
+      }),
+    );
+    const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+    assert.equal(parsed.baseUrl, 'http://searxng.railway.internal:8080');
+    assert.equal(parsed.note, 'short and plain');
+  });
+
+  test("a structured, non-free-text object (e.g. a SearXNG attempt's `reason`) is never touched", () => {
+    const reason = { cause: 'http_status', status: 429 };
+    const { stderr } = captureStreams(() =>
+      logOperation('some_op', {
+        operation: 'thing',
+        outcome: 'error',
+        durationMs: 1,
+        reason,
+      }),
+    );
+    const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+    assert.deepEqual(parsed.reason, { cause: 'http_status', status: 429 });
+  });
+
+  test('an unboundedly long string field is truncated', () => {
+    const { stderr } = captureStreams(() =>
+      logOperation('some_op', {
+        operation: 'thing',
+        outcome: 'error',
+        durationMs: 1,
+        cause: 'x'.repeat(10000),
+      }),
+    );
+    const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+    assert.ok((parsed.cause as string).length < 10000);
+  });
+
+  test("an upstream-controlled string array (e.g. SearXNG's unresponsive engines list) is capped in size, and each entry sanitized", () => {
+    const manyEngines = Array.from({ length: 100 }, (_, i) => `engine-${i}`);
+    const { stderr } = captureStreams(() =>
+      logOperation('some_op', {
+        operation: 'thing',
+        outcome: 'error',
+        durationMs: 1,
+        engines: manyEngines,
+      }),
+    );
+    const parsed = JSON.parse(stderr[0]!) as Record<string, unknown>;
+    const engines = parsed.engines as string[];
+    assert.ok(engines.length < 100, 'the engines array must be capped');
+    assert.ok(engines.length > 0);
+  });
+});
+
 describe('request correlation context', () => {
   test('getRequestId reads the ambient context when one is active', () => {
     runInRequestContext('req-abc', () => {

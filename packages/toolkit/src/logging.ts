@@ -74,6 +74,68 @@ export function withRequestContext<T>(fn: (requestId: string) => T): T {
 
 // ── Writer ────────────────────────────────────────────────────────────
 
+// Every field value passed to logEvent()/logOperation() is routed through
+// this before it is written — this is deliberate, not incidental: several
+// call sites across the toolkit pass raw upstream text into a log record
+// (a Crawl4AI/Playwright error message, an SSE transport error, a SearXNG
+// unresponsive-engines list), and any of those can embed the caller's own
+// target URL — query string, tokens, and all — or grow unboundedly (a
+// thrown error's message can, in principle, carry an entire page body).
+// Rather than trust every current and future call site to remember to
+// sanitize its own free-text fields, the writer sanitizes everything by
+// default: a new field cannot opt out by omission.
+//
+// Fields that are already safe (targetUrl via safeUrl(), baseUrl from
+// Config, userAgent/query already truncated) pass through unchanged, since
+// redacting an embedded URL is a no-op when there is no query string to
+// strip, and truncating an already-short value is a no-op. Structured,
+// non-free-text values (numbers, booleans, null, and plain objects such as
+// a SearXNG attempt's `reason`) are never touched, so exact-shape
+// assertions on them keep working.
+
+const MAX_FIELD_LENGTH = 500;
+const MAX_ARRAY_ITEMS = 25;
+
+// Matches a URL-shaped substring anywhere inside free text and captures
+// just the scheme and the host+path portion, so userinfo, query string,
+// and fragment — the parts that can carry secrets — can be dropped without
+// reparsing/reconstructing the URL (which could otherwise normalize an
+// already-clean value, e.g. adding a trailing slash to a bare origin).
+const EMBEDDED_URL_RE =
+  /(\bhttps?:\/\/)([^\s"')]*?@)?([^\s"')?#]+)(\?[^\s"')#]*)?(#[^\s"')]*)?/gi;
+
+function redactUrlsInText(text: string): string {
+  return text.replace(
+    EMBEDDED_URL_RE,
+    (
+      _match,
+      scheme: string,
+      _userinfo: string | undefined,
+      hostAndPath: string,
+    ) => `${scheme}${hostAndPath}`,
+  );
+}
+
+function sanitizeString(value: string): string {
+  return truncate(redactUrlsInText(value), MAX_FIELD_LENGTH);
+}
+
+function sanitizeFieldValue(value: unknown): unknown {
+  if (typeof value === 'string') return sanitizeString(value);
+  if (Array.isArray(value) && value.every(v => typeof v === 'string')) {
+    return (value as string[]).slice(0, MAX_ARRAY_ITEMS).map(sanitizeString);
+  }
+  return value;
+}
+
+function sanitizeFields<T extends Record<string, unknown>>(fields: T): T {
+  const sanitized: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    sanitized[key] = sanitizeFieldValue(value);
+  }
+  return sanitized as T;
+}
+
 function write(record: Record<string, unknown>): void {
   process.stderr.write(JSON.stringify(record) + '\n');
 }
@@ -89,7 +151,7 @@ export function logEvent(
   write({
     ts: new Date().toISOString(),
     event,
-    ...fields,
+    ...sanitizeFields(fields),
     kind: 'event',
     level,
   });
@@ -114,8 +176,8 @@ export function logOperation(event: string, fields: OperationFields): void {
   write({
     ts: new Date().toISOString(),
     event,
-    ...fields,
-    requestId,
+    ...sanitizeFields(fields),
+    requestId: sanitizeString(requestId),
     kind: 'operation',
     level,
   });

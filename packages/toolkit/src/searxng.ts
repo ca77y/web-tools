@@ -501,29 +501,47 @@ export async function searchSearXNG(
   return { data };
 }
 
-/** Yields promises in the order they resolve (like Promise.race but iterative). */
+/**
+ * Yields promises in the order they resolve (like Promise.race but
+ * iterative). Every input task in this file's own use is already wrapped
+ * with its own `.catch()` before being handed here (so it never rejects in
+ * practice), but this stays defensive in its own right: an input promise
+ * that does reject rejects its corresponding output promise rather than
+ * leaving it forever unsettled, so an unexpected throw can never wedge a
+ * search waiting on it.
+ */
 function raceAll<T>(promises: Promise<T>[]): Promise<T>[] {
   const results: {
     resolve: (value: T) => void;
+    reject: (err: unknown) => void;
     promise: Promise<T>;
   }[] = [];
   const pending = new Set<Promise<T>>(promises);
 
   for (let i = 0; i < promises.length; i++) {
     let resolve!: (value: T) => void;
-    const promise = new Promise<T>(r => {
-      resolve = r;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
     });
-    results.push({ resolve, promise });
+    results.push({ resolve, reject, promise });
   }
 
   let idx = 0;
   for (const p of promises) {
-    p.then(value => {
-      if (pending.delete(p)) {
-        results[idx++]!.resolve(value);
-      }
-    });
+    p.then(
+      value => {
+        if (pending.delete(p)) {
+          results[idx++]!.resolve(value);
+        }
+      },
+      err => {
+        if (pending.delete(p)) {
+          results[idx++]!.reject(err);
+        }
+      },
+    );
   }
 
   return results.map(r => r.promise);

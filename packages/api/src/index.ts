@@ -1,18 +1,14 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { Config, getStats, logEvent, tools } from '@web-tools/toolkit';
 import express, { Request, Response } from 'express';
-
-import { toolHandler } from './handler.js';
+import { Config, getStats, logEvent, tools } from '@web-tools/toolkit';
 import { createServer } from './mcp.js';
+import { toolHandler } from './handler.js';
 import { requestLogMiddleware } from './request-log.js';
 
 // Constant-time API key check. Hash both sides to fixed-length digests so the
 // compare never leaks length and timingSafeEqual can't throw on mismatch.
-const keyMatches = (
-  provided: string | undefined,
-  expected: string,
-): boolean => {
+const keyMatches = (provided: string | undefined, expected: string): boolean => {
   if (!provided) return false;
   const a = createHash('sha256').update(provided).digest();
   const b = createHash('sha256').update(expected).digest();
@@ -101,7 +97,7 @@ app.delete('/mcp', async (_req: Request, res: Response) => {
 
 app.get('/api/v0', (_req: Request, res: Response) => {
   res.json({
-    tools: tools.map(t => ({
+    tools: tools.map((t) => ({
       name: t.name,
       description: t.description,
     })),
