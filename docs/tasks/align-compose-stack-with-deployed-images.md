@@ -5,7 +5,7 @@ title: Build the custom Crawl4AI image in the Compose stack
 
 # Build the custom Crawl4AI image in the Compose stack
 
-- [<] Build the custom Crawl4AI image in the Compose stack #bug ⏫ 🆔 align-compose-stack-with-deployed-images
+- [/] Build the custom Crawl4AI image in the Compose stack #bug ⏫ 🆔 align-compose-stack-with-deployed-images
   - Phase: Phase 3 - Operable Service
   - Problem: the repository owns a custom Crawl4AI image at [`services/crawl4ai/Dockerfile`](../../services/crawl4ai/Dockerfile) that exists solely to repair a boot crash in the upstream image, but no configuration in this repository ever builds it.
     - [`docker-compose.yml`](../../docker-compose.yml) line 19 sets the Crawl4AI service to `image: unclecode/crawl4ai:latest` — the unrepaired upstream image. Every other repository-owned service in that file uses `build:` (`searxng` at line 8, `web_tools` at lines 26-28). Crawl4AI is the sole exception.
