@@ -23,7 +23,7 @@ Only feature, improvement, and bug stories are implementation-ready. Research, m
 
 - The checkbox symbol is the source of truth for status; do not duplicate status in frontmatter.
 - Frontmatter contains only `type` and `title`.
-- New cards start Todo. Move a refined, unblocked card to Ready to start. The lead moves invoked work to In Progress and In Review; the human owner moves merged work to Done.
+- New cards start Todo. A card becomes Ready to start once it is refined and unblocked, In Progress while it is being built, In Review once its PR is open, and Done once that PR is merged.
 - Add `Phase: Phase N - Name` on the next indented line when a story belongs to a delivery phase in [`../PRODUCT.md`](../PRODUCT.md).
 - Copy [`../_templates/story.md`](../_templates/story.md) for new stories.
 - Keep examples and template checkboxes outside `docs/tasks/` so the Task Board does not scan them as real work.

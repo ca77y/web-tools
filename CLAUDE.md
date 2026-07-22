@@ -40,9 +40,9 @@ library/         # Markdown research wiki: raw sources, synthesis, and metadata
 - Use lowercase kebab-case for documentation filenames. Keep landmark files such as `README.md`, `CLAUDE.md`, and `AGENTS_IMPROVEMENTS.md` uppercase.
 - Never inspect, output, or commit secrets or `.env` files.
 
-## Library routing
+## Library
 
-Every `library/` lookup, ingest, synthesis, index/taxonomy/log update, or audit goes through the library agents (`librarian`, `scribe`, or `clerk`). Read `library/_meta/librarian.md` before library work. Preserve raw notes and cite durable claims.
+Read `library/_meta/librarian.md` before library work. Preserve raw notes and cite durable claims.
 
 ## Validation
 

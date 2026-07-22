@@ -4,7 +4,6 @@ A Markdown-first research wiki: evidence and synthesis, not implementation autho
 
 ## Rules
 
-- Route lookups, raw-note ingest, synthesis, index/taxonomy/log updates, and audits through the `librarian`, `scribe`, `clerk`, or `researcher` agents.
 - Preserve raw notes and source provenance.
 - Cite durable claims from wiki pages back to raw sources or external primary sources.
 - Keep generated indexes rebuildable from Markdown and frontmatter.
