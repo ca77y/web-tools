@@ -399,6 +399,7 @@ As in step 3, the first run builds the images locally before starting, so expect
 | `SEARXNG_URL` | No | SearXNG URL (default: `http://searxng.railway.internal:8080`) |
 | `CRAWL4AI_URL` | No | Crawl4AI URL (default: `http://crawl4ai.railway.internal:11235`) |
 | `CRAWL4AI_API_TOKEN` | No | API token for Crawl4AI authentication |
+| `CRAWL4AI_CALL_TIMEOUT_MS` | No | Per-call Crawl4AI MCP timeout in milliseconds (default: `150000`) |
 | `SEARXNG_ENGINES` | No | Default engines (e.g. `"google,brave,duckduckgo"`) |
 | `PROXY_URL` | No | Proxy for SearXNG outgoing requests (set on SearXNG service) |
 

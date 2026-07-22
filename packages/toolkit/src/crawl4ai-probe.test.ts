@@ -573,10 +573,7 @@ test('two probes racing the same failing connect share one connect attempt and d
   // arriving while resetClient() is mid-close" without needing to
   // fabricate a slow close() — the two callers' resetClient() calls
   // interleave naturally because they share one abandoned transport.
-  const [a, b] = await Promise.all([
-    probeCrawl4AI(1000),
-    probeCrawl4AI(1000),
-  ]);
+  const [a, b] = await Promise.all([probeCrawl4AI(1000), probeCrawl4AI(1000)]);
 
   for (const result of [a, b]) {
     assert.equal(result.status, 'unhealthy');
@@ -605,15 +602,6 @@ test('two probes racing the same failing connect share one connect attempt and d
     'a later probe after the race must open a fresh connect attempt',
   );
 });
-
-// ── Second amendment: transport ownership ────────────────────────────────
-// resetClient() must act only on the transport the caller's own connect
-// attempt is tied to, never on whatever `activeTransport` happens to hold
-// when the caller finally gets around to failing. Both scenarios below are
-// impossible to construct through `mode` alone: they need a failure that
-// resets shared state (`onerror`/`onclose`, or a "transport broke
-// mid-request" reset) to fire against a transport that a *different*,
-// already-established connection has superseded.
 
 test('an established connection dropped by the server is closed, not merely dereferenced: no reconnect loop survives, and a later probe opens exactly one new connection', async () => {
   mode = 'ok';
@@ -671,166 +659,40 @@ test('an established connection dropped by the server is closed, not merely dere
   );
 });
 
-test("a probe abandoned mid-request does not reset a newer round's transport once a fresh connect has already replaced it", async () => {
-  mode = 'ok';
-  successfulConnectAttempts = 0;
-  const mod = await freshModule();
-  const { probeCrawl4AI, callCrawlTool } = mod;
+// ── Second amendment: transport ownership ────────────────────────
+// resetClient() must act only on the transport the caller's own connect
+// attempt is tied to, never on whatever `activeTransport` happens to hold
+// when the caller finally gets around to failing.
+//
+// Two scenarios previously lived here — "a probe abandoned mid-request does
+// not reset a newer round's transport once a fresh connect has already
+// replaced it" and "a superseded transport's late onclose does not clear
+// the shared state its replacement owns" — both constructed by using a
+// `callCrawlTool()` operation-level failure to silently move the module's
+// `client` pointer off a still-fully-open, still-answerable T1 (`call()`'s
+// pre-fix catch nulled `client`/`connecting` on *any* rejection without
+// closing anything), so a later, genuinely fresh T2 could be established
+// while T1 was left dangling — open, but no longer referenced — for a stale
+// event to arrive against.
+//
+// `crawl4ai-mcp-client-timeout-and-recovery` removes exactly that "silently
+// discarded but still open" state: `call()` no longer nulls shared state on
+// an operation-level failure at all (see `call()`'s own comment in
+// crawl4ai.ts), so `client` stays cached on the healthy T1 and no
+// replacement is ever created — the setup step above no longer moves the
+// pointer, making both scenarios unconstructable through the public API.
+// This is the intended consequence of the fix, not a coincidental casualty.
+//
+// The underlying ownership-guard defense these two were layered on top of
+// remains fully covered by two sibling tests elsewhere in this file that
+// construct the same kind of race through means unrelated to `call()`'s
+// (now-fixed) bug: "two probes racing the same failing connect share one
+// connect attempt" (a genuine concurrent-connect race, above) and "an
+// established connection dropped by the server is closed, not merely
+// dereferenced" (a genuine server-side drop, above). Neither of those relies
+// on `callCrawlTool`, so neither needed any change for this story.
 
-  // Establish T1 cleanly.
-  const warm = await probeCrawl4AI(3000);
-  assert.equal(warm.status, 'ok');
-  assert.equal(successfulConnectAttempts, 1);
-
-  // Start a straggler probe against the same, already-connected client.
-  // The fake server holds its tools/list request open rather than
-  // answering it -- modelling readiness.ts's outer deadline abandoning a
-  // probe that is still waiting on a slow tools/list answer: the probe
-  // itself keeps running in the background even once its caller has
-  // stopped awaiting it.
-  mode = 'malformed_pending';
-  const straggler = probeCrawl4AI(10000);
-
-  // Let the request actually reach the server and register its release
-  // gate, so it is genuinely held open, not merely queued locally.
-  await new Promise(resolve => setTimeout(resolve, 50));
-
-  // A concurrent tool call fails for an unrelated reason. `call()`'s own
-  // catch (crawl4ai.ts; out of this unit's scope to change) nulls the
-  // shared `client`/`connecting` on any rejection without closing or
-  // touching `activeTransport` -- so it leaves T1 dangling exactly as a
-  // superseded transport is left after readiness.ts abandons a probe and
-  // its TTL later rotates to a fresh round.
-  await assert.rejects(() => callCrawlTool({ url: 'https://example.invalid/' }));
-
-  // A later probe now finds `client`/`connecting` cold and opens a
-  // genuinely new, second connection (T2) while the straggler's request
-  // is still pending against T1.
-  mode = 'ok';
-  const roundB = await probeCrawl4AI(3000);
-  assert.equal(roundB.status, 'ok');
-  assert.equal(
-    successfulConnectAttempts,
-    2,
-    'round B opened a genuinely fresh, second connection',
-  );
-
-  // Now let the straggler's stale request fail: the fake server answers
-  // with a payload that fails the SDK's own result-schema validation,
-  // which surfaces to the caller as a rejection that is not an `McpError`
-  // -- the same "transport broke mid-request" shape a real dropped
-  // connection produces -- without ever touching round B's transport via
-  // `onerror`/`onclose`. The straggler's ownership token still names T1,
-  // the transport round B's connect already superseded, so its reset
-  // attempt must be a no-op rather than closing round B's live T2.
-  releasePendingToolsList();
-  const strayResult = await straggler;
-  // Pin the branch, not just the status: this test's entire value rests on
-  // the straggler taking the *non*-`McpError` catch, since that is the
-  // only branch that calls `resetClient(myTransport)` at all. If the
-  // schema-validation rejection ever stopped being classified as
-  // `network_error`, the ownership guard below would never even be
-  // exercised, and the "round C reused the connection" assertion would
-  // pass for a reason unrelated to the fix under test.
-  assert.equal(strayResult.status, 'unhealthy');
-  assert.equal(strayResult.detail, 'network_error');
-
-  // Prove T2 is still open and usable: a further probe reuses it rather
-  // than reconnecting.
-  mode = 'ok';
-  const roundC = await probeCrawl4AI(3000);
-  assert.equal(roundC.status, 'ok');
-  assert.equal(
-    successfulConnectAttempts,
-    2,
-    "round C reused the still-open connection from round B: the straggler's stale reset did not close it",
-  );
-});
-
-test("a superseded transport's late onclose does not clear the shared state its replacement owns", async () => {
-  // The companion to the two tests above, for the third hazard the second
-  // amendment names: the `onerror`/`onclose` handlers wired inside
-  // `getClient()` used to write to shared state unconditionally, so a late
-  // event from a transport a newer connect had already replaced would null
-  // `client`/`connecting` belonging to that replacement. Routing those
-  // handlers through the ownership-guarded `resetClient(transport)` makes a
-  // stale one a no-op.
-  //
-  // The discriminator here is deliberately not a connect counter: a stale
-  // transport keeps its own `eventsource` retry loop (it is no longer the
-  // owner, so nothing closes it -- a pre-existing consequence of `call()`'s
-  // catch, out of this unit's scope), and those retries would make any
-  // count non-deterministic. Instead the fake is held in `refused` mode for
-  // the whole post-drop phase, where a *fresh* connect cannot succeed but
-  // an *already-established* session still answers `tools/list` normally
-  // (only `GET /mcp/sse` looks at `mode`). So the final probe answering
-  // `ok` is positive proof it reused the replacement's live client; had the
-  // stale event nulled that state, the probe would have had to reconnect
-  // and would have reported `unhealthy`/`network_error` instead.
-  mode = 'ok';
-  successfulConnectAttempts = 0;
-  refusedConnectAttempts = 0;
-  const preExisting = new Set(openTransports);
-  const { probeCrawl4AI, callCrawlTool } = await freshModule();
-
-  // T1.
-  assert.equal((await probeCrawl4AI(3000)).status, 'ok');
-  assert.equal(successfulConnectAttempts, 1);
-  const first = [...openTransports].filter(t => !preExisting.has(t));
-  assert.equal(first.length, 1, 'T1 is the only session this test opened');
-
-  // Supersede T1 without closing it: `call()`'s catch nulls
-  // `client`/`connecting` on any rejection and leaves `activeTransport`
-  // alone, so the next connect installs a replacement while T1 is still
-  // open and still has its handlers wired.
-  await assert.rejects(() => callCrawlTool({ url: 'https://example.invalid/' }));
-
-  // T2 -- the replacement, now the owner of the shared state.
-  assert.equal((await probeCrawl4AI(3000)).status, 'ok');
-  assert.equal(
-    successfulConnectAttempts,
-    2,
-    'the replacement is a genuinely new connection, opened while T1 is still open',
-  );
-
-  // Drop T1 server-side. Its client-side `onclose`/`onerror` now fire
-  // against a transport that is no longer `activeTransport`.
-  mode = 'refused';
-  for (const transport of first) {
-    void transport.close();
-    openTransports.delete(transport);
-  }
-  const reacted = await pollUntil(
-    () => refusedConnectAttempts > 0,
-    RECONNECT_HINT_MS * 40,
-  );
-  assert.ok(
-    reacted,
-    'the stale transport did react to the drop, so its late handler really did fire',
-  );
-
-  // Still in `refused` mode: only a reused, already-established session can
-  // answer this.
-  const afterStaleEvent = await probeCrawl4AI(3000);
-  assert.equal(
-    afterStaleEvent.status,
-    'ok',
-    "a superseded transport's late close must not null the replacement's client: the probe had to be able to reuse the live connection, which a fresh connect could not have produced in refused mode",
-  );
-  assert.equal(
-    successfulConnectAttempts,
-    2,
-    'no reconnect was needed, confirming the shared client survived the stale event',
-  );
-
-  // Hygiene, not an assertion: drive the stale transport's retry loop into
-  // its permanent-failure state (a clean 503) so it stops before the next
-  // test, exactly as `after()` does for every other leftover session.
-  mode = 'connect_unavailable';
-  await new Promise(resolve => setTimeout(resolve, RECONNECT_HINT_MS * 6));
-});
-
-test("onerror does not close the transport for a failed tool-call POST: only a genuine stream failure does", async () => {
+test('onerror does not close the transport for a failed tool-call POST: only a genuine stream failure does', async () => {
   // Pins crawl4ai.ts's `err instanceof SseError` gate on `transport.onerror`.
   // `SSEClientTransport.send()` (used by every individual tool request,
   // e.g. `web_crawl`) throws a plain `Error` -- not an `SseError` -- when
@@ -847,15 +709,19 @@ test("onerror does not close the transport for a failed tool-call POST: only a g
   assert.equal((await probeCrawl4AI(3000)).status, 'ok');
   assert.equal(successfulConnectAttempts, 1);
   const mine = [...openTransports].filter(t => !preExisting.has(t));
-  assert.equal(mine.length, 1, 'exactly one new server-side SSE session was opened by this test');
+  assert.equal(
+    mine.length,
+    1,
+    'exactly one new server-side SSE session was opened by this test',
+  );
 
-  // The tool call's outgoing POST fails with a clean 500. `call()`'s own
-  // catch (crawl4ai.ts; unrelated to this fix) nulls the shared
-  // `client`/`connecting` on any rejection regardless of cause, so the
-  // call itself is expected to reject either way -- the question this
-  // test asks is only whether the *transport* got closed along with it.
+  // The tool call's outgoing POST fails with a clean 500. `call()` itself
+  // still rejects either way -- the question this test asks is only
+  // whether the *transport* got closed along with it.
   mode = 'post_fails';
-  await assert.rejects(() => callCrawlTool({ url: 'https://example.invalid/' }));
+  await assert.rejects(() =>
+    callCrawlTool({ url: 'https://example.invalid/' }),
+  );
 
   // Give a (hypothetically incorrect) close a moment to propagate: closing
   // client-side ends the underlying HTTP response, which this fake's
@@ -868,16 +734,19 @@ test("onerror does not close the transport for a failed tool-call POST: only a g
     'a failed tool-call POST must not close the shared transport: only a genuine SSE-level failure may',
   );
 
-  // A fresh connect is still required for the next probe -- `call()`'s
-  // catch nulled `client`/`connecting`, independent of this fix -- but it
-  // must succeed cleanly, proving nothing was left wedged.
+  // The next probe reuses the existing connection rather than reconnecting:
+  // `call()` no longer nulls `client`/`connecting` on an operation-level
+  // failure like this one (crawl4ai-mcp-client-timeout-and-recovery), since
+  // the transport itself is still perfectly healthy -- this is also what
+  // fixes the connection leak a repeated operation-level failure used to
+  // cause (see the dedicated coverage in crawl4ai-call.test.ts).
   mode = 'ok';
   const recovered = await probeCrawl4AI(3000);
   assert.equal(recovered.status, 'ok');
   assert.equal(
     successfulConnectAttempts,
-    2,
-    "the next probe opens a fresh connection because call()'s catch (unrelated to this fix) nulled client/connecting, not because the transport itself was torn down",
+    1,
+    'the shared client survived the operation-level failure: no reconnect was needed',
   );
 });
 

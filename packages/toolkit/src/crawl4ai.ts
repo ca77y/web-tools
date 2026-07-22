@@ -1,5 +1,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/sse.js';
+import {
+  SSEClientTransport,
+  SseError,
+} from '@modelcontextprotocol/sdk/client/sse.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
 
 import { Config } from './config.js';
@@ -267,12 +270,12 @@ async function getClient(): Promise<Client> {
     // becomes a no-op instead of closing/nulling the replacement, and an
     // established connection that drops (a Crawl4AI restart or crash)
     // gets its transport actually closed via this path, not merely
-    // dereferenced. This guarantee is scoped to callers that go through
-    // `resetClient()`: `call()`'s own catch below still nulls `client`/
-    // `connecting` directly without clearing `activeTransport`, which can
-    // still orphan a transport and its reconnect timer on that path —
-    // tracked as a known gap owned by the sibling
-    // `normalize-crawl4ai-config-payloads` story, not this one.
+    // dereferenced. `call()`'s own failure handling (below) no longer nulls
+    // `client`/`connecting` directly either — see its own comment for why a
+    // *connection-level* failure routes through this same `resetClient()`
+    // path (via the `catch` around `c.connect()` a few lines down) while an
+    // *operation-level* failure (a `callTool` rejection on an otherwise-live
+    // connection) deliberately leaves shared state untouched.
     //
     // `onerror` is deliberately gated on `err instanceof SseError`. The SDK
     // funnels several unrelated failure shapes through this same callback,
@@ -317,7 +320,32 @@ async function getClient(): Promise<Client> {
       void resetClient(transport);
     };
 
-    await c.connect(transport);
+    // A rejection here is an `initialize`-phase failure (a timed-out or
+    // protocol-rejected handshake, or an auth rejection) — the transport
+    // itself started successfully; only the SDK's own `Client.connect()`
+    // request on top of it failed. The MCP SDK's `Client.connect()` happens
+    // to call its own `this.close()` internally before rethrowing on any
+    // such failure, which today cascades to the `onclose` handler above and
+    // self-heals — confirmed by reading and exercising
+    // `@modelcontextprotocol/sdk@1.26.0`'s `client/index.js`. This `catch`
+    // does not rely on that implicit, version-specific cascade: it clears
+    // shared state directly, so recovery does not depend on the SDK
+    // continuing to call `close()` from that exact spot in a future
+    // version. It is also what makes it safe for `call()` (below) to stop
+    // independently discarding shared state on every failure — previously,
+    // `call()`'s own unconditional discard on *any* error masked a gap here
+    // as an unrelated side effect; now that it only discards a
+    // genuinely-connection-level failure, this `catch` is the one thing
+    // guaranteeing `connecting` never latches on a rejected promise. Without
+    // it, a caller could be left relying entirely on an implicit SDK-internal
+    // detail to avoid wedging every later `getClient()` caller behind the
+    // same dead promise until the process restarts.
+    try {
+      await c.connect(transport);
+    } catch (err) {
+      await resetClient(transport);
+      throw err;
+    }
     client = c;
     connecting = null;
     return c;
@@ -358,7 +386,9 @@ async function getClient(): Promise<Client> {
  * Swallows a close error: this function's job is to guarantee the shared
  * state ends up clear, not to report how the close went.
  */
-async function resetClient(transport: SSEClientTransport | null): Promise<void> {
+async function resetClient(
+  transport: SSEClientTransport | null,
+): Promise<void> {
   if (!transport || transport !== activeTransport) return;
 
   const abandoned = connecting;
@@ -379,6 +409,34 @@ async function resetClient(transport: SSEClientTransport | null): Promise<void> 
   } catch {
     // Ignore: the transport may already be closing or closed.
   }
+}
+
+// One bounded retry for the connection-level failure class (root cause 4):
+// one initial connect attempt plus one retry, never more. Deliberately
+// scoped to the connect step alone — retrying `callTool` itself is out of
+// scope (owned by the sibling `retry-transient-crawl-failures` story) and
+// would let this retry compound with that one on the same logical request.
+const MAX_CONNECT_ATTEMPTS = 2;
+
+/**
+ * Calls `getClient()` up to `MAX_CONNECT_ATTEMPTS` times, retrying only a
+ * connection-level failure (`getClient()` itself rejecting). Each retry is
+ * guaranteed a genuinely fresh attempt: `getClient()`'s own `catch` around
+ * `c.connect()` always clears `client`/`connecting`/`activeTransport` (and
+ * closes whatever it built) before its promise rejects, so there is never a
+ * stale, latched `connecting` promise for a retry to land on — see
+ * `getClient()`'s own comment on that `catch`.
+ */
+async function getClientWithRetry(): Promise<Client> {
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= MAX_CONNECT_ATTEMPTS; attempt++) {
+    try {
+      return await getClient();
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+  throw lastErr;
 }
 
 async function call(name: string, args: Record<string, unknown>) {
@@ -422,9 +480,50 @@ async function call(name: string, args: Record<string, unknown>) {
   // is the only place its Crawl4AI call gets any outcome/duration
   // attribution at all.
   const elapsed = startTimer();
+
+  // Two distinct failure classes, handled differently — see the spec
+  // ("call(): explicit timeout, connect-level retry, no operation-level
+  // discard") for the full reasoning:
+  //
+  // - A **connection-level failure** (getClientWithRetry() below) is
+  //   getClient() itself rejecting, i.e. no connected client was ever
+  //   obtained. getClient()'s own internal cleanup (its `catch` around
+  //   `c.connect()`, plus the existing `onerror`/`onclose` wiring) always
+  //   closes whatever a failed attempt built and clears shared state before
+  //   the rejection reaches here, so nothing further needs closing on this
+  //   branch — only a bounded retry against a guaranteed-fresh attempt.
+  // - An **operation-level failure** (the `callTool` call itself rejecting
+  //   — a protocol error, an `ErrorCode.RequestTimeout`, or a `send()`-level
+  //   transport error) does NOT discard or retry. The shared client may
+  //   still be live and serving other concurrent callers: closing it here
+  //   would reject every one of their in-flight requests too (the MCP SDK's
+  //   `Client._onclose()` rejects every pending request on transport
+  //   close), and retrying would re-run the tool call itself, which is
+  //   exactly what would let this story's connection-level retry compound
+  //   with a future crawl-level retry on the same logical request. A
+  //   genuinely dead transport is instead discovered and cleaned up via
+  //   `onerror`/`onclose` (the `SseError` case) or by a later caller's own
+  //   connect failure — not by this catch.
+  let c: Client;
   try {
-    const c = await getClient();
-    const result = await c.callTool({ name, arguments: normalizedArgs });
+    c = await getClientWithRetry();
+  } catch (err) {
+    logOperation('crawl4ai_dispatch', {
+      operation,
+      requestId,
+      outcome: 'error',
+      durationMs: elapsed(),
+      cause: err instanceof Error ? err.message : String(err),
+    });
+    throw err;
+  }
+
+  try {
+    const result = await c.callTool(
+      { name, arguments: normalizedArgs },
+      undefined,
+      { timeout: Config.crawl4ai.callTimeoutMs },
+    );
     logOperation('crawl4ai_dispatch', {
       operation,
       requestId,
@@ -440,8 +539,6 @@ async function call(name: string, args: Record<string, unknown>) {
       durationMs: elapsed(),
       cause: err instanceof Error ? err.message : String(err),
     });
-    client = null;
-    connecting = null;
     throw err;
   }
 }
@@ -474,7 +571,9 @@ function withConnectTimeout(
 ): Promise<Client> {
   return new Promise<Client>((resolve, reject) => {
     const timer = setTimeout(() => {
-      reject(new McpError(ErrorCode.RequestTimeout, 'crawl4ai connect timed out'));
+      reject(
+        new McpError(ErrorCode.RequestTimeout, 'crawl4ai connect timed out'),
+      );
     }, timeoutMs);
     pending.then(
       value => {
