@@ -63,7 +63,26 @@ The Node.js 24 application hosts MCP and REST. It is stateless except for proces
 
 ### Crawl4AI
 
-Crawl4AI owns browser-grade retrieval, rendering, extraction, screenshots, PDF generation, and JavaScript execution. Its protocol and result classification are encapsulated by the toolkit client.
+Crawl4AI owns browser-grade retrieval, rendering, extraction, screenshots, PDF generation, and JavaScript execution. Its protocol and result classification are encapsulated by the toolkit client. Web Tools reaches it over MCP/SSE and never calls its REST API directly; the image's own MCP-to-REST bridge performs that translation inside the container, so a loopback rejection surfaces to us as a bridge response rather than as a transport error. The repository owns the image it runs; see [Service Image Provenance](#service-image-provenance).
+
+#### Crawl4AI Config Contract
+
+`browser_config` and `crawler_config` are the two configuration payloads sent with every Crawl4AI call. The rules below are properties of the pinned `unclecode/crawl4ai:0.9.1` image, not Web Tools choices. They were established empirically — the image was run locally and its real MCP `crawl` tool invoked with each shape in turn — and cross-checked against the image's own `crawl4ai/async_configs.py`. Re-check them whenever the pinned image is bumped. Reproducing that check on arm64 currently needs a locally corrected image: `services/crawl4ai/Dockerfile`'s build guard checks an amd64-only Playwright path (`chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell`), while the same install lands at `chromium_headless_shell-*/chrome-linux/headless_shell` on arm64.
+
+**The envelope does not affect acceptance.** A config may be sent flat (`{"css_selector": "main"}`) or wrapped as `{"type": "CrawlerRunConfig", "params": {...}}`. The image accepts both identically, so the envelope was never a cause of `HTTP 400`. Web Tools nevertheless emits exactly one canonical form — the wrapped `{type, params}` envelope, which is upstream's own `dump()`/`load()` serialization and is unambiguous when a config legitimately carries a field named `type`. A single normalization helper in `packages/toolkit/src/crawl4ai.ts`, applied inside the shared `call()`, canonicalizes every outgoing payload, so MCP, REST, and the CLI produce byte-identical arguments for equivalent input. Callers may still supply either envelope; wrapped detection mirrors upstream's `from_serializable_dict` predicate exactly — a value is wrapped only when it is an object carrying both a `type` equal to the config class name and a `params` object.
+
+**What actually produces `HTTP 400` is untrusted-provenance field filtering.** A config arriving in a network request body is `Provenance.UNTRUSTED`. The image's `_filter_untrusted_fields` then treats fields in three ways: allowlisted fields are honored, unknown fields are **silently dropped** (the crawl succeeds, configured differently from what was asked), and *forbidden* fields raise `UntrustedConfigError`, which the server maps to `HTTP 400`.
+
+The forbidden sets are:
+
+- `BrowserConfig` — `browser_context_id`, `cdp_url`, `channel`, `chrome_channel`, `cookies`, `debugging_port`, `extra_args`, `headers`, `host`, `init_scripts`, `proxy`, `proxy_config`, `storage_state`, `target_id`, `user_data_dir`
+- `CrawlerRunConfig` — `base_url`, `c4a_script`, `deep_crawl_strategy`, `experimental`, `fallback_fetch_function`, `js_code`, `js_code_before_wait`, `magic`, `override_navigator`, `process_in_browser`, `proxy_config`, `proxy_rotation_strategy`, `proxy_session_auto_release`, `proxy_session_id`, `proxy_session_ttl`, `session_id`, `shared_data`, `simulate_user`
+
+Web Tools mirrors both sets as named constants beside the normalizer and rejects a forbidden field — or a `browser_config`/`crawler_config` that is present but is not an object — with `Crawl4AIConfigError` before any request leaves the process. The caller gets an actionable error naming the field instead of a rejection the bridge returns as ordinary tool content. Caller-supplied keys are merged over the stealth defaults rather than discarded, in either envelope. Unknown-but-permitted keys are forwarded unchanged; Web Tools does not invent a stricter contract than the provider's.
+
+The published schemas describe only what the image honors: `WebFetchInput` no longer carries `session_id`, and `WebCrawlInput.crawler_config` no longer declares `js_code`, `js_only`, `magic`, `override_navigator`, `semaphore_count`, `session_id`, or `simulate_user` — each is either forbidden or outside the allowlist and therefore silently dropped.
+
+**Operator consequence: per-request proxy configuration is not possible against this image.** `proxy_config` and `proxy` are forbidden on `BrowserConfig`, so a deployment that sets `PROXY_SERVER` and `PROXY_USERNAME` now fails fast with an actionable error rather than emitting a request the image rejects. Proxied egress must instead be configured on the Crawl4AI service itself, which is consistent with the tunnel ownership described in [`issues/proxy-exit-ip-health-unverifiable.md`](./issues/proxy-exit-ip-health-unverifiable.md): the CONNECT tunnel belongs to the Chromium process inside the Crawl4AI container, not to Web Tools. Session reuse (`session_id`) is unavailable for the same reason.
 
 ### SearXNG
 
@@ -277,6 +296,14 @@ The service graph should remain explicit:
 - SearXNG depends on Redis according to its service configuration.
 - Archive operations depend on public Wayback Machine endpoints.
 - The API listens on the platform-provided `PORT`, defaulting to `3000` locally.
+
+### Service Image Provenance
+
+Three of the four owned services are built from this repository, and both the local Compose stack and the production deployment build from the same sources: Web Tools from the root `Dockerfile`, SearXNG from `services/searxng`, and Crawl4AI from `services/crawl4ai`. Only Redis runs a stock upstream image (`redis:7-alpine`).
+
+Crawl4AI is repository-owned rather than pulled prebuilt because the upstream image is unusable as published: its Playwright headless-shell binary is missing from the path Crawl4AI resolves at runtime, so the server fails to launch a browser. `services/crawl4ai/Dockerfile` pins `unclecode/crawl4ai:0.9.1`, reinstalls the browser binaries, and guards the build on the binary being present. The pin also keeps the Crawl4AI version from drifting. That image is amd64-only, so the Compose service declares `platform: linux/amd64` and arm64 hosts run it under emulation; the first local start builds the image rather than pulling it.
+
+Operator-facing setup for both paths lives outside this document: local stack steps in the root [`README.md`](../README.md), and the per-service Railway configuration in [`RAILWAY.md`](../RAILWAY.md).
 
 ## Technology Choices
 

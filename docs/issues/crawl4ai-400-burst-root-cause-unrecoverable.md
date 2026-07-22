@@ -36,10 +36,10 @@ The densest part of the burst put multiple rejections inside a single second:
 
 **Two plausible mechanisms were identified in our own code**, both of which can produce a request Crawl4AI rejects before browser allocation:
 
-1. *Config envelope mismatch.* `web_fetch` sends the wrapped `{ type: 'CrawlerRunConfig', params: {...} }` form (`packages/toolkit/src/functions.ts:158-167`), while the CLI builds a flat, unwrapped `crawler_config` (`packages/cli/src/commands/crawl.ts:27-38`) and `web_crawl` forwards it verbatim (`packages/toolkit/src/functions.ts:247`). The published schema `WebCrawlInput.crawler_config` (`packages/toolkit/src/schemas.ts:70-144`) documents the flat form, so any schema-obeying caller produces a payload `web_fetch` would never send.
+1. *A field the pinned image forbids from an untrusted request.* **Corrected 2026-07-21 by `normalize-crawl4ai-config-payloads`.** This entry originally read *config envelope mismatch*: `web_fetch` sent the wrapped `{ type, params }` config form while the CLI and `web_crawl` sent a flat one, and the mismatch was assumed to be what upstream rejected. That assumption has since been **refuted empirically** — the pinned `unclecode/crawl4ai:0.9.1` image accepts flat and wrapped configs identically, so the envelope never produced a 400. What does produce one is the image's untrusted-provenance field rules: a *forbidden* field raises and becomes a 400, while a merely unknown field is silently dropped. Web Tools could emit forbidden fields on several paths — `browser_config.proxy_config` whenever a proxy was configured, `crawler_config.session_id` from `web_fetch`, and `crawler_config.magic` from the CLI `--magic` flag. See the Crawl4AI Config Contract in [`../ARCHITECTURE.md`](../ARCHITECTURE.md) for the confirmed rules and the full forbidden sets. The envelope inconsistency was a real defect on its own terms — a caller obeying the published schema got a payload `web_fetch` would never send, and `web_crawl` silently discarded unwrapped `browser_config` keys — but it was not a 400 mechanism.
 2. *Missing required fields.* REST passes the raw body to the toolkit with no validation (`packages/api/src/handler.ts:12`), and `web_screenshot`, `web_pdf`, and `web_execute_js` add no guards (`packages/toolkit/src/functions.ts:199-213`). A REST call with an empty body reaches Crawl4AI with no `url`.
 
-Both are real defects and both are now tracked. **Neither can be confirmed as the cause of the 2026-07-18 burst.**
+Both are real defects and both are now tracked. **Neither can be confirmed as the cause of the 2026-07-18 burst.** The correction to mechanism 1 narrows what a future 400 can mean; it does not attribute any of these 72 rejections, and this incident remains unexplained for the reasons below.
 
 ## Why no solution could be identified for the incident itself
 
@@ -64,6 +64,6 @@ The retained logs are the only evidence, the incident window has passed, and the
 
 ## Tracked follow-up
 
-- [`../tasks/normalize-crawl4ai-config-payloads.md`](../tasks/normalize-crawl4ai-config-payloads.md) - fixes mechanism 1.
+- [`../tasks/normalize-crawl4ai-config-payloads.md`](../tasks/normalize-crawl4ai-config-payloads.md) - established the real mechanism 1 and stopped Web Tools emitting any forbidden-field request. It did **not** explain this incident.
 - [`../tasks/validate-tool-inputs-at-transport-boundary.md`](../tasks/validate-tool-inputs-at-transport-boundary.md) - fixes mechanism 2.
 - [`../tasks/request-correlation-logging.md`](../tasks/request-correlation-logging.md) - adds request IDs, structured logs, and the outgoing Crawl4AI argument-shape summary that makes any recurrence attributable.
