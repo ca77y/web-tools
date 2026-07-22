@@ -21,6 +21,5 @@ docs/
 - Specs are temporary implementation contracts. After shipping, fold durable content into `ARCHITECTURE.md` (or `PRODUCT.md` when it changes direction), then remove the spec. Do not archive specs.
 - Keep architecture and diagrams current; update or remove stale material.
 - Research and source material live in [`../library/`](../library/README.md), not in engineering docs.
-- Story format and status rules live in [`tasks/CLAUDE.md`](./tasks/CLAUDE.md).
 - Record a problem in `issues/` only when it is real but no solution could be identified on our side. State what was investigated, the evidence, and what would unblock it. Once a fix becomes identifiable, replace the note with a story in `tasks/`.
 - Copy templates from `_templates/`; do not edit a template into a real artifact.
