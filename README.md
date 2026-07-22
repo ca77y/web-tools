@@ -287,6 +287,11 @@ The **SearXNG** service should build from the repo instead of a Docker image:
 - **Root Directory**: `services/searxng`
 - **Optional env var**: `PROXY_URL` — proxy for outgoing search requests (e.g. `socks5://user:pass@host:port`)
 
+The **Crawl4AI** service should also build from the repo instead of a Docker image:
+- **Source**: same GitHub repo
+- **Root Directory**: `services/crawl4ai`
+- **Why**: the custom image repairs the upstream Playwright browser path and pins the Crawl4AI version
+
 ## Quick Start (Local)
 
 ### 1. Clone and install
@@ -309,7 +314,15 @@ cp .env.example .env.local
 docker compose up -d redis searxng crawl4ai
 ```
 
-This starts Redis, SearXNG, and Crawl4AI. Then run the server:
+This starts Redis, SearXNG, and Crawl4AI.
+
+**Before the stack is usable for crawls:** export `CRAWL4AI_API_TOKEN` in your shell before the command above, e.g. `export CRAWL4AI_API_TOKEN=<token>` — setting it only in `.env.local` does not reach the `crawl4ai` service (Compose interpolates `${CRAWL4AI_API_TOKEN}` from your shell environment or a default `.env` file, never from `.env.local`; the host-run server below does read `.env.local`, so the shell export is needed for the container, not for it). Without a token, Crawl4AI binds `127.0.0.1` inside its own container and its published port refuses connections from the host, so `pnpm run start` below still boots, but every `web_fetch`, crawl, screenshot, PDF, and JavaScript-execution request fails.
+
+**First run only:** the SearXNG and Crawl4AI images build locally instead of pulling, so it takes noticeably longer than a pull — this is expected, not a hang.
+
+The Crawl4AI image is amd64-only (its Playwright browser-binary check only resolves on amd64). `docker-compose.yml` pins the `crawl4ai` service to `platform: linux/amd64`, so Compose builds and runs it under emulation automatically on Apple Silicon or other arm64 hosts — no extra configuration needed, though emulated builds and requests run slower than native.
+
+Then run the server:
 
 ```bash
 SEARXNG_URL=http://localhost:8080 CRAWL4AI_URL=http://localhost:11235 pnpm run start
@@ -322,6 +335,8 @@ The server is available at `http://localhost:3000`.
 ```bash
 docker compose up
 ```
+
+As in step 3, the first run builds the images locally before starting, so expect several minutes on a cold cache. Unlike step 3, `web_tools` now runs in its own container, which reads `CRAWL4AI_API_TOKEN` only from `.env.local` (via `env_file`), not from your shell — while Crawl4AI itself still reads the token only from your shell. So before this command, set the same value in **both** places: uncomment and set `CRAWL4AI_API_TOKEN` in `.env.local`, and also `export CRAWL4AI_API_TOKEN=<token>` in your shell. Skipping either leaves `web_tools` unable to authenticate with Crawl4AI, or Crawl4AI unreachable altogether. Apple Silicon and other arm64 hosts need no extra configuration — see step 3 for why.
 
 ## Environment Variables
 

@@ -12,6 +12,21 @@ Add an entry only when a specific pipeline, agent, or skill improvement is disco
 
 **Suggested change**: When shaping an issue note, require the "why no solution could be identified" conclusion to either (a) reflect that the confirming reproduction was actually run, or (b) be phrased as a provisional/leading hypothesis with `Status` and the conclusion section worded accordingly (e.g. "suspected, unconfirmed") until the reproduction closes the gap. Treat an unperformed reproduction step as a blocker on a confirmed-root-cause framing, not a footnote. No agent currently owns `docs/issues/` shaping, so this rule also needs a home.
 
+### Environment-specific validation findings discovered during implementation should be folded back into the spec's Validation section
+
+**Area**: flow (spec -> implementation -> QA handoff)
+
+**Observed**: The spec for `align-compose-stack-with-deployed-images` lists its acceptance commands plainly (`docker compose build crawl4ai`, crawl `http://localhost:11235`). None of them work as written on this machine. The implementer had to discover three environment facts to get a real pass: the pinned base image's browser-binary guard only resolves on `linux/amd64` so the build needs `DOCKER_DEFAULT_PLATFORM=linux/amd64` (this records what was discovered mid-implementation; the shipped fix instead pins the service-scoped `platform:` key in `docker-compose.yml`, so the env var is no longer current guidance); the container binds `127.0.0.1` and is unreachable from the host unless `CRAWL4AI_API_TOKEN` is set; and host port 11235 is held by a concurrent sibling worktree's container, requiring a `!override` port remap rather than stopping the sibling. All three reached QA only through the ephemeral task message, never through the spec, whose Validation section still reads as if the plain commands suffice. Anyone re-running acceptance from the spec alone — a later reviewer, or a re-run after the worktree is gone — hits three consecutive failures that look like defects but are not.
+
+**Suggested change**: Make it part of the implementation-to-QA handoff that any environment-specific precondition or workaround discovered while executing a spec's Validation steps is written back into that Validation section (as a precondition note next to the affected command), not just relayed in the handoff message. Ephemeral agent messages are not a durable home for acceptance preconditions.
+
+### The `code-review` skill assumes a GitHub pull request, but every review in this flow targets an uncommitted worktree diff
+
+**Area**: skill:code-review
+
+**Observed**: Reviews in this pipeline run against the uncommitted working-tree diff of a `.worktrees/<slug>/` checkout — no pull request, no pushed branch, no commit SHA for the changed lines. The skill is written end-to-end for a PR: step 1 checks whether the PR is closed/draft/already reviewed, steps 4c-4d dispatch agents to read "previous pull requests that touched these files" and their review comments, step 7 re-runs the PR eligibility check, and step 8 posts the result with `gh` in a mandated format built from permalinks that require a full commit SHA. None of that is reachable for uncommitted work, so the reviewer must silently discard roughly half the prescribed procedure and invent a report shape, while the caller's own instructions ask for findings relayed "as-is" from a skill that never produced them in the expected form. This is the second round of the same review to re-derive that adaptation from scratch.
+
+**Suggested change**: Give the skill an explicit uncommitted/worktree mode selected from the target it is handed: skip the PR eligibility and re-eligibility steps, replace the PR-history agents with `git log`/`git blame` over the touched paths, and specify a non-`gh` output shape that cites `absolute/path:line` instead of SHA permalinks. Failing that, state in the skill that non-PR targets are out of scope so callers route them elsewhere rather than each reviewer improvising.
 ### A spec must state plainly when it cannot satisfy a card acceptance criterion as written
 
 **Area**: flow (spec authoring against a story card)
