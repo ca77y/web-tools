@@ -5,7 +5,7 @@ title: Add request correlation IDs and structured operation logging
 
 # Add request correlation IDs and structured operation logging
 
-- [<] Add request correlation IDs and structured operation logging #improvement ⏫ 🆔 request-correlation-logging
+- [?] Add request correlation IDs and structured operation logging #improvement ⏫ 🆔 request-correlation-logging
     - Phase: Phase 3 - Operable Service
     - Problem: production logs cannot be tied back to a request, an input, or an outcome. Every log line in the API and toolkit is a bare `process.stderr.write` string with no request ID, no operation name, no duration, and no upstream status. During a production incident on 2026-07-17/18 several failures could not be reconstructed at all, because the logs recorded that *something* failed but not *what was asked for* or *whether the caller ultimately got an answer*.
     - Evidence - search logs identify only an attempt number:
