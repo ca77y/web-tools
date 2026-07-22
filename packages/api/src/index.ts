@@ -2,6 +2,7 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express, { Express, Request, Response } from 'express';
 import { Config, checkReadiness, getStats, tools } from '@web-tools/toolkit';
+import type { ReadinessReport } from '@web-tools/toolkit';
 import { createServer } from './mcp.js';
 import { toolHandler } from './handler.js';
 
@@ -129,8 +130,26 @@ app.get('/health', (_req: Request, res: Response) => {
 // body, never the status code — and must never be configured as a
 // platform health check path; see the comment on GET /health above.
 app.get('/ready', async (_req: Request, res: Response) => {
-  const report = await checkReadiness();
-  res.status(200).json(report);
+  try {
+    const report = await checkReadiness();
+    res.status(200).json(report);
+  } catch {
+    // Defence in depth: `checkReadiness()` never rejects by construction
+    // (every probe resolves, and `withDeadline` only resolves), so this
+    // branch is unreachable today. It exists because the always-200
+    // contract is this endpoint's promise, and on Express 5 an escaped
+    // rejection would be forwarded to the default error handler as a
+    // 500 — putting dependency state back into status-code space, which
+    // is exactly what this split removed. Keeping the guarantee local to
+    // the route means a future regression inside readiness.ts degrades
+    // the body, never the status code.
+    const unknown = { status: 'unhealthy', latency_ms: 0 } as const;
+    res.status(200).json({
+      status: 'unhealthy',
+      checked_at: new Date().toISOString(),
+      dependencies: { searxng: unknown, crawl4ai: unknown },
+    } satisfies ReadinessReport);
+  }
 });
 
 // ── Stats / cost monitoring ─────────────────────────────────────────
