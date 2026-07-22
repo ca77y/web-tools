@@ -228,8 +228,8 @@ describe('structured per-attempt logging', () => {
       'each attempt is numbered exactly once',
     );
     assert.deepEqual(
-      new Set(records.map(r => r.kind)),
-      new Set(['ok', 'empty', 'failed']),
+      new Set(records.map(r => r.outcome)),
+      new Set(['ok', 'empty', 'error']),
     );
   });
 
@@ -251,12 +251,12 @@ describe('structured per-attempt logging', () => {
       line => JSON.parse(line) as Record<string, unknown>,
     );
 
-    const ok = records.find(r => r.kind === 'ok');
+    const ok = records.find(r => r.outcome === 'ok');
     assert.ok(ok, 'expected an ok record');
     assert.equal(ok.results, 2);
     assert.equal(ok.hasContent, true);
 
-    const failed = records.find(r => r.kind === 'failed');
+    const failed = records.find(r => r.outcome === 'error');
     assert.ok(failed, 'expected a failed record');
     assert.deepEqual(failed.reason, { cause: 'http_status', status: 429 });
   });

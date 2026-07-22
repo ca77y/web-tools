@@ -43,6 +43,21 @@ export {
   closeCrawl4AIClient,
 } from './crawl4ai.js';
 
+export {
+  adoptOrMintRequestId,
+  getRequestId,
+  logEvent,
+  logOperation,
+  runInRequestContext,
+  safeUrl,
+  sanitizeRequestId,
+  startTimer,
+  summarizeArgShape,
+  truncate,
+  withRequestContext,
+} from './logging.js';
+export type { OperationFields } from './logging.js';
+
 export type {
   SearchResult,
   SnapshotInfo,

@@ -1,10 +1,17 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import express, { Express, Request, Response } from 'express';
-import { Config, checkReadiness, getStats, tools } from '@web-tools/toolkit';
+import {
+  Config,
+  checkReadiness,
+  getStats,
+  logEvent,
+  tools,
+} from '@web-tools/toolkit';
 import type { ReadinessReport } from '@web-tools/toolkit';
 import { createServer } from './mcp.js';
 import { toolHandler } from './handler.js';
+import { requestLogMiddleware } from './request-log.js';
 
 // Constant-time API key check. Hash both sides to fixed-length digests so the
 // compare never leaks length and timingSafeEqual can't throw on mismatch.
@@ -15,15 +22,10 @@ const keyMatches = (provided: string | undefined, expected: string): boolean => 
   return timingSafeEqual(a, b);
 };
 
-const log = (...args: unknown[]) => {
-  process.stderr.write(
-    args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ') + '\n',
-  );
-};
-
-log('Environment check:', { searxngUrl: Config.searxng.url });
+logEvent('startup_check', { searxngUrl: Config.searxng.url });
 
 export const app: Express = express();
+app.use(requestLogMiddleware);
 app.use(express.json());
 
 // ── Auth middleware (skips /health) ──────────────────────────────────
@@ -58,12 +60,16 @@ app.post('/mcp', async (req: Request, res: Response) => {
     await transport.handleRequest(req, res, req.body);
 
     res.on('close', () => {
-      log('Request closed');
+      logEvent('mcp_request_closed', {});
       transport.close();
       server.close();
     });
   } catch (error) {
-    log('Error handling MCP request:', error);
+    logEvent(
+      'mcp_request_error',
+      { message: error instanceof Error ? error.message : String(error) },
+      'error',
+    );
     if (!res.headersSent) {
       res.status(500).json({
         jsonrpc: '2.0',
@@ -164,13 +170,10 @@ app.get('/stats', (_req: Request, res: Response) => {
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
 export const server = app.listen(PORT, () => {
-  log(`Web Tools server listening on port ${PORT}`);
-  log(`  MCP:    POST /mcp`);
-  log(`  API:    POST /api/v0/{tool_name}`);
-  log(`  Health: GET  /health`);
+  logEvent('server_listening', { port: PORT });
 });
 
 process.on('SIGINT', async () => {
-  log('Shutting down server...');
+  logEvent('server_shutdown', {});
   process.exit(0);
 });

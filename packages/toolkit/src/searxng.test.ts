@@ -1,9 +1,37 @@
 import assert from 'node:assert/strict';
 import { afterEach, describe, test } from 'node:test';
 
+import { Config } from './config.js';
+import { MAX_ARRAY_ITEMS } from './logging.js';
 import { SearchProviderError, searchSearXNG } from './searxng.js';
 
 const originalFetch = globalThis.fetch;
+const originalStderrWrite = process.stderr.write.bind(process.stderr);
+
+/** Captures every line written to stderr while `fn` runs. */
+async function captureStderr<T>(
+  fn: () => Promise<T>,
+): Promise<{ lines: string[]; error?: unknown }> {
+  const chunks: string[] = [];
+  process.stderr.write = ((chunk: unknown) => {
+    chunks.push(String(chunk));
+    return true;
+  }) as typeof process.stderr.write;
+  let error: unknown;
+  try {
+    await fn();
+  } catch (err) {
+    error = err;
+  } finally {
+    process.stderr.write = originalStderrWrite;
+  }
+  return { lines: chunks.join('').split('\n').filter(Boolean), error };
+}
+
+/** Parses every captured line as JSON. */
+function parseAll(lines: string[]): Record<string, unknown>[] {
+  return lines.map(line => JSON.parse(line) as Record<string, unknown>);
+}
 
 /** A minimal, well-formed SearXNG-shaped result. */
 function result(url: string, title = 'Title', content = '') {
@@ -47,6 +75,7 @@ function stubFetch(
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  process.stderr.write = originalStderrWrite;
 });
 
 describe('searchSearXNG - per-attempt outcome classification', () => {
@@ -477,5 +506,264 @@ describe('searchSearXNG - safe error content', () => {
       assert.ok(!JSON.stringify(spErr.reasons).includes(sensitiveBody));
       return true;
     });
+  });
+});
+
+describe('searchSearXNG - attribution: query, base URL, and status', () => {
+  test('a failing attempt names the query, the configured base URL, and the HTTP status', async () => {
+    stubFetch([
+      () => jsonResponse({}, 503),
+      () => jsonResponse({}, 503),
+      () => jsonResponse({}, 503),
+    ]);
+
+    const { lines } = await captureStderr(() =>
+      searchSearXNG('spec-probe-query').catch(() => undefined),
+    );
+    const attempts = parseAll(lines).filter(
+      r => r.event === 'searxng_attempt_outcome',
+    );
+
+    assert.equal(attempts.length, Config.parallelRequests);
+    for (const record of attempts) {
+      assert.equal(record.query, 'spec-probe-query');
+      assert.equal(record.baseUrl, Config.searxng.url);
+      assert.equal(record.outcome, 'error');
+      assert.equal(typeof record.durationMs, 'number');
+      assert.equal(record.status, 503);
+    }
+  });
+
+  test('a timeout omits status rather than inventing one, and carries cause "timeout"', async () => {
+    stubFetch([
+      () => Promise.reject(new DOMException('aborted', 'TimeoutError')),
+      () => Promise.reject(new DOMException('aborted', 'TimeoutError')),
+      () => Promise.reject(new DOMException('aborted', 'TimeoutError')),
+    ]);
+
+    const { lines } = await captureStderr(() =>
+      searchSearXNG('q').catch(() => undefined),
+    );
+    const attempts = parseAll(lines).filter(
+      r => r.event === 'searxng_attempt_outcome',
+    );
+
+    assert.equal(attempts.length, Config.parallelRequests);
+    for (const record of attempts) {
+      assert.equal(record.outcome, 'error');
+      assert.equal(record.cause, 'timeout');
+      assert.equal(
+        'status' in record,
+        false,
+        'a timeout must not carry a status field',
+      );
+    }
+  });
+});
+
+describe('searchSearXNG - the flattened `engines` and the nested `reason.engines` are both sanitized', () => {
+  test('a large, secret-bearing unresponsive_engines list is capped and redacted identically in both places it is logged', async () => {
+    // logAttemptOutcome deliberately surfaces the classification's engines
+    // list twice: once flattened at the top level (record.engines) and
+    // once nested inside the preserved `reason` object
+    // (record.reason.engines) — the same underlying array, referenced from
+    // two fields. Both must be capped to MAX_ARRAY_ITEMS and have any
+    // embedded secret redacted; a fix that only touches the top-level copy
+    // and skips values nested one level down leaves the nested copy raw
+    // and uncapped.
+    const manyEngines: Array<[string, string]> = Array.from(
+      { length: 60 },
+      (_, i) => [`engine-${i}`, 'HTTP error'],
+    );
+    manyEngines[10] = ['https://u:p@ex.com/x?token=SECRET0', 'HTTP error'];
+
+    stubFetch([
+      () => jsonResponse({ results: [], unresponsive_engines: manyEngines }),
+      () => jsonResponse({ results: [], unresponsive_engines: manyEngines }),
+      () => jsonResponse({ results: [], unresponsive_engines: manyEngines }),
+    ]);
+
+    const { lines } = await captureStderr(() =>
+      searchSearXNG('q').catch(() => undefined),
+    );
+
+    for (const line of lines) {
+      assert.ok(!line.includes('SECRET0'), `secret leaked: ${line}`);
+      assert.ok(!line.includes('u:p@'), `credentials leaked: ${line}`);
+    }
+
+    const attempts = parseAll(lines).filter(
+      r => r.event === 'searxng_attempt_outcome',
+    );
+    assert.ok(attempts.length > 0);
+    for (const record of attempts) {
+      const flatEngines = record.engines as string[];
+      const nestedEngines = (record.reason as { engines: string[] }).engines;
+      assert.ok(
+        flatEngines.length <= MAX_ARRAY_ITEMS,
+        `flattened engines not capped: ${flatEngines.length}`,
+      );
+      assert.ok(
+        nestedEngines.length <= MAX_ARRAY_ITEMS,
+        `nested reason.engines not capped: ${nestedEngines.length}`,
+      );
+    }
+  });
+});
+
+describe('searchSearXNG - fan-out labelling', () => {
+  test('the Config.parallelRequests copies of one search share a searchId and carry pairwise distinct attempts', async () => {
+    stubFetch([
+      () => jsonResponse({}, 500),
+      () => jsonResponse({}, 500),
+      () => jsonResponse({}, 500),
+    ]);
+
+    const { lines } = await captureStderr(() =>
+      searchSearXNG('q').catch(() => undefined),
+    );
+    const attempts = parseAll(lines).filter(
+      r => r.event === 'searxng_attempt_outcome',
+    );
+
+    assert.equal(attempts.length, Config.parallelRequests);
+    const searchIds = new Set(attempts.map(r => r.searchId));
+    assert.equal(
+      searchIds.size,
+      1,
+      'all attempts of one search share one searchId',
+    );
+    const attemptNumbers = attempts.map(r => r.attempt).sort();
+    assert.deepEqual(attemptNumbers, [1, 2, 3]);
+  });
+
+  test('two concurrent searches produce two distinct searchId groups, each with its own query', async () => {
+    // Every attempt of every search fails identically; attribution here
+    // relies purely on searchId grouping, not on response content, so the
+    // outcome is deliberately order-independent.
+    globalThis.fetch = (async () => jsonResponse({}, 500)) as typeof fetch;
+
+    const { lines } = await captureStderr(async () => {
+      await Promise.all([
+        searchSearXNG('query-one').catch(() => undefined),
+        searchSearXNG('query-two').catch(() => undefined),
+      ]);
+    });
+    const attempts = parseAll(lines).filter(
+      r => r.event === 'searxng_attempt_outcome',
+    );
+
+    assert.equal(attempts.length, Config.parallelRequests * 2);
+    const bySearchId = new Map<string, Record<string, unknown>[]>();
+    for (const record of attempts) {
+      const id = record.searchId as string;
+      const group = bySearchId.get(id) ?? [];
+      group.push(record);
+      bySearchId.set(id, group);
+    }
+    assert.equal(bySearchId.size, 2, 'exactly two distinct searchId groups');
+    for (const group of bySearchId.values()) {
+      assert.equal(group.length, Config.parallelRequests);
+      const queries = new Set(group.map(r => r.query));
+      assert.equal(queries.size, 1, 'each group carries one distinct query');
+    }
+    const groupQueries = new Set(
+      [...bySearchId.values()].map(group => group[0]!.query),
+    );
+    assert.equal(groupQueries.size, 2);
+  });
+});
+
+describe('searchSearXNG - search_complete summary', () => {
+  test('one summary line per search states what the caller received, with the winning attempt and failed count', async () => {
+    stubFetch([
+      () =>
+        jsonResponse({ results: [result('https://a.example', 'A', 'body')] }),
+      () => jsonResponse({}, 500),
+      () => jsonResponse({}, 502),
+    ]);
+
+    const { lines } = await captureStderr(() => searchSearXNG('q'));
+    const summaries = parseAll(lines).filter(
+      r => r.event === 'search_complete',
+    );
+
+    assert.equal(summaries.length, 1);
+    const summary = summaries[0]!;
+    assert.equal(summary.outcome, 'ok');
+    assert.ok((summary.resultCount as number) > 0);
+    assert.equal(summary.winningAttempt, 1);
+    assert.equal(summary.failedAttempts, 2);
+    assert.equal(typeof summary.durationMs, 'number');
+  });
+
+  test('a genuine empty search (HTTP 200, zero results, no unresponsive engines) summarizes as empty, not a failure', async () => {
+    stubFetch([
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse({ results: [] }),
+      () => jsonResponse({ results: [] }),
+    ]);
+
+    const { lines } = await captureStderr(() => searchSearXNG('q'));
+    const summaries = parseAll(lines).filter(
+      r => r.event === 'search_complete',
+    );
+
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0]!.outcome, 'empty');
+    assert.equal(summaries[0]!.resultCount, 0);
+  });
+
+  test('a total search outage summarizes as an error and searchSearXNG still throws SearchProviderError unchanged', async () => {
+    stubFetch([
+      () => jsonResponse({}, 503),
+      () => jsonResponse({}, 503),
+      () => jsonResponse({}, 503),
+    ]);
+
+    const { lines, error } = await captureStderr(() => searchSearXNG('q'));
+    const summaries = parseAll(lines).filter(
+      r => r.event === 'search_complete',
+    );
+
+    assert.equal(summaries.length, 1);
+    assert.equal(summaries[0]!.outcome, 'error');
+    const spErr = assertSearchProviderError(error);
+    assert.match(spErr.message, /SearXNG search failed/i);
+    assert.equal(spErr.reasons.length, 3);
+  });
+});
+
+describe('searchSearXNG - context-free correlation', () => {
+  test('every record for a context-free call shares one requestId, and a second call gets a different one', async () => {
+    stubFetch([
+      () => jsonResponse({}, 500),
+      () => jsonResponse({}, 500),
+      () => jsonResponse({}, 500),
+    ]);
+    const { lines: firstLines } = await captureStderr(() =>
+      searchSearXNG('q').catch(() => undefined),
+    );
+    const first = parseAll(firstLines);
+    const firstIds = new Set(first.map(r => r.requestId));
+    assert.equal(
+      firstIds.size,
+      1,
+      'one call correlates all of its own records under one id',
+    );
+
+    stubFetch([
+      () => jsonResponse({}, 500),
+      () => jsonResponse({}, 500),
+      () => jsonResponse({}, 500),
+    ]);
+    const { lines: secondLines } = await captureStderr(() =>
+      searchSearXNG('q').catch(() => undefined),
+    );
+    const second = parseAll(secondLines);
+    const secondIds = new Set(second.map(r => r.requestId));
+    assert.equal(secondIds.size, 1);
+
+    assert.notEqual([...firstIds][0], [...secondIds][0]);
   });
 });

@@ -1,4 +1,7 @@
+import { randomUUID } from 'node:crypto';
+
 import { Config } from './config.js';
+import { getRequestId, logOperation, startTimer, truncate } from './logging.js';
 import type { DependencyProbeResult } from './readiness.js';
 import type { SearchResult } from './types.js';
 
@@ -30,6 +33,9 @@ type FetchOutcome =
   | { kind: 'empty' }
   | { kind: 'failed'; reason: SearXNGFailureReason };
 
+/** One parallel attempt, paired with the attempt number that produced it. */
+type AttemptResult = { attempt: number; outcome: FetchOutcome };
+
 /**
  * Thrown by `searchSearXNG` when every parallel SearXNG attempt fails (a
  * total upstream outage), as opposed to a genuine no-match. Carries the
@@ -46,20 +52,65 @@ export class SearchProviderError extends Error {
   }
 }
 
-/** Emits one single-line JSON record to stderr per SearXNG attempt outcome. */
-function logOutcome(attempt: number, outcome: FetchOutcome): void {
-  const record: Record<string, unknown> = {
-    event: 'searxng_attempt_outcome',
-    attempt,
-    kind: outcome.kind,
+/**
+ * Emits one operation record per SearXNG attempt outcome via the shared
+ * logger. The event name `searxng_attempt_outcome` and the `reason` shape on
+ * a failed attempt are preserved from before this story; the classification
+ * that used to live on the reserved `kind` field now lives on `outcome`
+ * (`failed` renamed to `error`), and the record gains `requestId`,
+ * `searchId`, `query`, `baseUrl`, and `durationMs`.
+ */
+function logAttemptOutcome(
+  ctx: {
+    requestId: string;
+    searchId: string;
+    attempt: number;
+    query: string;
+    durationMs: number;
+  },
+  outcome: FetchOutcome,
+): void {
+  const base = {
+    operation: 'searxng.attempt',
+    requestId: ctx.requestId,
+    searchId: ctx.searchId,
+    attempt: ctx.attempt,
+    query: truncate(ctx.query, 256),
+    baseUrl: Config.searxng.url,
+    durationMs: ctx.durationMs,
   };
+
   if (outcome.kind === 'ok') {
-    record.results = outcome.results.length;
-    record.hasContent = outcome.hasContent;
-  } else if (outcome.kind === 'failed') {
-    record.reason = outcome.reason;
+    logOperation('searxng_attempt_outcome', {
+      ...base,
+      outcome: 'ok',
+      results: outcome.results.length,
+      hasContent: outcome.hasContent,
+    });
+    return;
   }
-  process.stderr.write(JSON.stringify(record) + '\n');
+
+  if (outcome.kind === 'empty') {
+    logOperation('searxng_attempt_outcome', { ...base, outcome: 'empty' });
+    return;
+  }
+
+  // Preserve the structured `reason` object exactly as before this story,
+  // and additionally surface a flat `cause` (plus `status`/`engines` when
+  // applicable) at the top level for direct assertions.
+  const extra: Record<string, unknown> = {
+    reason: outcome.reason,
+    cause: outcome.reason.cause,
+  };
+  if (outcome.reason.cause === 'http_status')
+    extra.status = outcome.reason.status;
+  if (outcome.reason.cause === 'all_engines_unresponsive')
+    extra.engines = outcome.reason.engines;
+  logOperation('searxng_attempt_outcome', {
+    ...base,
+    outcome: 'error',
+    ...extra,
+  });
 }
 
 /**
@@ -104,8 +155,16 @@ async function fetchSearXNG(
   query: string,
   options: { engines?: string; timeout: number },
   attempt: number,
+  searchId: string,
+  requestId: string,
 ): Promise<FetchOutcome> {
   let outcome: FetchOutcome;
+  const elapsed = startTimer();
+  const logOutcome = (o: FetchOutcome): void =>
+    logAttemptOutcome(
+      { requestId, searchId, attempt, query, durationMs: elapsed() },
+      o,
+    );
 
   try {
     const {
@@ -129,7 +188,7 @@ async function fetchSearXNG(
         kind: 'failed',
         reason: { cause: 'http_status', status: response.status },
       };
-      logOutcome(attempt, outcome);
+      logOutcome(outcome);
       return outcome;
     }
 
@@ -138,13 +197,13 @@ async function fetchSearXNG(
       body = (await response.json()) as SearXNGResponse;
     } catch {
       outcome = { kind: 'failed', reason: { cause: 'invalid_response' } };
-      logOutcome(attempt, outcome);
+      logOutcome(outcome);
       return outcome;
     }
 
     if (!Array.isArray(body.results)) {
       outcome = { kind: 'failed', reason: { cause: 'invalid_response' } };
-      logOutcome(attempt, outcome);
+      logOutcome(outcome);
       return outcome;
     }
 
@@ -223,7 +282,7 @@ async function fetchSearXNG(
       } else {
         outcome = { kind: 'empty' };
       }
-      logOutcome(attempt, outcome);
+      logOutcome(outcome);
       return outcome;
     }
 
@@ -233,7 +292,7 @@ async function fetchSearXNG(
       results: valid,
       hasContent: withContent.length > 0,
     };
-    logOutcome(attempt, outcome);
+    logOutcome(outcome);
     return outcome;
   } catch (err) {
     // AbortSignal.timeout rejects with a DOMException named 'TimeoutError'.
@@ -245,7 +304,7 @@ async function fetchSearXNG(
       kind: 'failed',
       reason: { cause: isTimeout ? 'timeout' : 'network_error' },
     };
-    logOutcome(attempt, outcome);
+    logOutcome(outcome);
     return outcome;
   }
 }
@@ -274,6 +333,35 @@ function buildFailureMessage(reasons: SearXNGFailureReason[]): string {
   return `SearXNG search failed: all ${reasons.length} attempt(s) failed (${summary})`;
 }
 
+/**
+ * Emits the once-per-search summary record: what the caller actually
+ * received, the winning attempt (when one exists), the result count, and
+ * the per-cause failure counts — so an operator reading a failed attempt
+ * line can immediately tell whether the caller was still served.
+ */
+function logSearchComplete(ctx: {
+  requestId: string;
+  searchId: string;
+  outcome: 'ok' | 'empty' | 'error';
+  resultCount: number;
+  durationMs: number;
+  failedAttempts: number;
+  winningAttempt: number | null;
+}): void {
+  logOperation('search_complete', {
+    operation: 'searxng.search',
+    requestId: ctx.requestId,
+    searchId: ctx.searchId,
+    outcome: ctx.outcome,
+    resultCount: ctx.resultCount,
+    durationMs: ctx.durationMs,
+    failedAttempts: ctx.failedAttempts,
+    ...(ctx.winningAttempt !== null
+      ? { winningAttempt: ctx.winningAttempt }
+      : {}),
+  });
+}
+
 /** Fire parallel requests to SearXNG, return the first valid response with content. */
 export async function searchSearXNG(
   query: string,
@@ -282,9 +370,40 @@ export async function searchSearXNG(
   const limit = options?.limit ?? 10;
   const timeout = Config.requestTimeout;
   const count = Config.parallelRequests;
+  // A short random token labelling this search's own fan-out, so its
+  // Config.parallelRequests simultaneous identical attempts are
+  // distinguishable from one another (by `attempt`) and from a concurrent
+  // search's own attempts (by `searchId`), even under the same requestId.
+  const searchId = randomUUID().split('-')[0]!;
+  const requestId = getRequestId();
+  const searchElapsed = startTimer();
 
-  const tasks = Array.from({ length: count }, (_, i) =>
-    fetchSearXNG(query, { engines: options?.engines, timeout }, i + 1),
+  const tasks: Promise<AttemptResult>[] = Array.from(
+    { length: count },
+    (_, i) => {
+      const attempt = i + 1;
+      return fetchSearXNG(
+        query,
+        { engines: options?.engines, timeout },
+        attempt,
+        searchId,
+        requestId,
+      )
+        .then(outcome => ({ attempt, outcome }))
+        .catch(
+          // fetchSearXNG catches its own errors, so a rejection here is
+          // unexpected. Map it to a failed outcome rather than letting it
+          // propagate, so an unexpected throw can never be silently counted
+          // as a non-failure.
+          () => ({
+            attempt,
+            outcome: {
+              kind: 'failed',
+              reason: { cause: 'network_error' },
+            } as FetchOutcome,
+          }),
+        );
+    },
   );
 
   // Return the first response that has results with content.
@@ -293,19 +412,23 @@ export async function searchSearXNG(
   let rawResults: SearXNGResult[] = [];
   let sawOk = false;
   let sawEmpty = false;
+  let winningAttempt: number | null = null;
+  let failedAttempts = 0;
   const failures: SearXNGFailureReason[] = [];
 
   for (const promise of raceAll(tasks)) {
-    const outcome = await promise;
+    const { attempt, outcome } = await promise;
 
     if (outcome.kind === 'ok') {
       sawOk = true;
       if (outcome.hasContent) {
         rawResults = outcome.results;
+        winningAttempt = attempt;
         break;
       }
       if (bestNoContent === null) {
         bestNoContent = outcome.results;
+        winningAttempt = attempt;
       }
       continue;
     }
@@ -315,6 +438,7 @@ export async function searchSearXNG(
       continue;
     }
 
+    failedAttempts++;
     failures.push(outcome.reason);
   }
 
@@ -328,6 +452,15 @@ export async function searchSearXNG(
       // no-match. Surface it as an actionable error instead of a silent
       // empty success (docs/PRODUCT.md principle 2: "Failures are data,
       // not empty arrays").
+      logSearchComplete({
+        requestId,
+        searchId,
+        outcome: 'error',
+        resultCount: 0,
+        durationMs: searchElapsed(),
+        failedAttempts,
+        winningAttempt: null,
+      });
       throw new SearchProviderError(buildFailureMessage(failures), failures);
     }
     // At least one attempt genuinely answered with zero results, and none
@@ -335,8 +468,9 @@ export async function searchSearXNG(
     // if other attempts in this same batch were `failed` (spec scenario
     // "Mixed empty and failed"). Those failures are intentionally not
     // attached to this success return; they were already emitted as
-    // their own structured stderr lines by logOutcome when each attempt
-    // completed, so the information isn't lost, just not surfaced here.
+    // their own structured stderr lines by logAttemptOutcome when each
+    // attempt completed, so the information isn't lost, just not surfaced
+    // here.
     rawResults = [];
   }
 
@@ -354,6 +488,16 @@ export async function searchSearXNG(
     });
     if (data.length >= limit) break;
   }
+
+  logSearchComplete({
+    requestId,
+    searchId,
+    outcome: sawOk ? 'ok' : 'empty',
+    resultCount: data.length,
+    durationMs: searchElapsed(),
+    failedAttempts,
+    winningAttempt: sawOk ? winningAttempt : null,
+  });
 
   return { data };
 }
@@ -423,20 +567,31 @@ export async function probeSearXNG(
   }
 }
 
-/** Yields promises in the order they resolve (like Promise.race but iterative). */
-function raceAll(promises: Promise<FetchOutcome>[]): Promise<FetchOutcome>[] {
+/**
+ * Yields promises in the order they resolve (like Promise.race but
+ * iterative). Every input task in this file's own use is already wrapped
+ * with its own `.catch()` before being handed here (so it never rejects in
+ * practice), but this stays defensive in its own right: an input promise
+ * that does reject rejects its corresponding output promise rather than
+ * leaving it forever unsettled, so an unexpected throw can never wedge a
+ * search waiting on it.
+ */
+function raceAll<T>(promises: Promise<T>[]): Promise<T>[] {
   const results: {
-    resolve: (value: FetchOutcome) => void;
-    promise: Promise<FetchOutcome>;
+    resolve: (value: T) => void;
+    reject: (err: unknown) => void;
+    promise: Promise<T>;
   }[] = [];
-  const pending = new Set<Promise<FetchOutcome>>(promises);
+  const pending = new Set<Promise<T>>(promises);
 
   for (let i = 0; i < promises.length; i++) {
-    let resolve!: (value: FetchOutcome) => void;
-    const promise = new Promise<FetchOutcome>(r => {
-      resolve = r;
+    let resolve!: (value: T) => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
     });
-    results.push({ resolve, promise });
+    results.push({ resolve, reject, promise });
   }
 
   let idx = 0;
@@ -447,16 +602,9 @@ function raceAll(promises: Promise<FetchOutcome>[]): Promise<FetchOutcome>[] {
           results[idx++]!.resolve(value);
         }
       },
-      () => {
-        // fetchSearXNG catches its own errors, so a rejection here is
-        // unexpected. Map it to a failed outcome rather than a bare value
-        // (the previous `null as T`), so an unexpected throw can never be
-        // silently counted as a non-failure.
+      err => {
         if (pending.delete(p)) {
-          results[idx++]!.resolve({
-            kind: 'failed',
-            reason: { cause: 'network_error' },
-          });
+          results[idx++]!.reject(err);
         }
       },
     );

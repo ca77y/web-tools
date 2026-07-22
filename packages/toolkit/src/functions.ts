@@ -7,11 +7,18 @@ import {
   callScreenshotTool,
   unwrapCrawl4AIConfig,
 } from './crawl4ai.js';
+import {
+  getRequestId,
+  logOperation,
+  safeUrl,
+  startTimer,
+  withRequestContext,
+} from './logging.js';
 import { noteBlocked, noteSuccess } from './rotation.js';
 import { searchSearXNG } from './searxng.js';
 import { getStats, recordCall, type ToolName } from './stats.js';
-import { getArchivedPage, getSnapshots } from './wayback.js';
 import type { ToolResult } from './types.js';
+import { getArchivedPage, getSnapshots } from './wayback.js';
 
 // Regex matching upstream Crawl4AI failure modes that benefit from a
 // browser rotation: explicit anti-bot signals (429, CF challenge) AND
@@ -44,18 +51,99 @@ function traceJson(tool: ToolName, payload: unknown): void {
   recordCall(tool, JSON.stringify(payload).length, false);
 }
 
-const log = (...args: unknown[]) => {
-  process.stderr.write(
-    args.map((a) => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ') + '\n',
-  );
-};
+// ── Operation wrapper ────────────────────────────────────────────────
+//
+// Every public tool function below routes through runOperation(): it joins
+// the ambient request context or creates one, times the call, and emits
+// exactly one operation record — without altering the tool's return value
+// or thrown error. A throw is recorded as outcome "error" and rethrown
+// unchanged. Outcome is derived generically from the resolved value's shape
+// (an `isError` property, when present, wins) rather than special-cased per
+// tool, so the same wrapper covers all nine uniformly.
+
+function deriveOutcome(result: unknown): 'ok' | 'error' {
+  if (result && typeof result === 'object' && 'isError' in result) {
+    return (result as { isError?: unknown }).isError ? 'error' : 'ok';
+  }
+  return 'ok';
+}
+
+async function runOperation<T>(
+  operation: string,
+  fn: () => Promise<T>,
+): Promise<T> {
+  return withRequestContext(async requestId => {
+    const elapsed = startTimer();
+    try {
+      const result = await fn();
+      logOperation('tool_call', {
+        operation,
+        requestId,
+        outcome: deriveOutcome(result),
+        durationMs: elapsed(),
+      });
+      return result;
+    } catch (error) {
+      logOperation('tool_call', {
+        operation,
+        requestId,
+        outcome: 'error',
+        durationMs: elapsed(),
+        cause: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+  });
+}
+
+// ── Target derivation for Crawl4AI-backed calls ──────────────────────
+// `web_crawl.urls` is an array, so a multi-URL crawl logs its first entry
+// plus a count; the single-URL tools always carry a count of 1. A call with
+// no derivable URL logs `targetUrl: null` / `targetUrlCount: 0` rather than
+// omitting the fields.
+
+type Target = { targetUrl: string | null; targetUrlCount: number };
+
+function singleTarget(url: unknown): Target {
+  return typeof url === 'string' && url
+    ? { targetUrl: url, targetUrlCount: 1 }
+    : { targetUrl: null, targetUrlCount: 0 };
+}
+
+function multiTarget(urls: unknown): Target {
+  return Array.isArray(urls) && urls.length > 0 && typeof urls[0] === 'string'
+    ? { targetUrl: urls[0], targetUrlCount: urls.length }
+    : { targetUrl: null, targetUrlCount: 0 };
+}
 
 // ── Crawl4AI proxy wrapper ───────────────────────────────────────────
 
 async function proxyCrawl4AI(
   toolName: string,
+  target: Target,
   fn: () => Promise<unknown>,
 ): Promise<ToolResult> {
+  const requestId = getRequestId();
+  const { url: targetUrl, hasQuery: targetHasQuery } = safeUrl(
+    target.targetUrl,
+  );
+  const elapsed = startTimer();
+  const emit = (
+    outcome: 'ok' | 'empty' | 'error',
+    extra: Record<string, unknown> = {},
+  ) => {
+    logOperation('crawl4ai_call', {
+      operation: `crawl4ai.${toolName}`,
+      requestId,
+      outcome,
+      durationMs: elapsed(),
+      targetUrl,
+      targetHasQuery,
+      targetUrlCount: target.targetUrlCount,
+      ...extra,
+    });
+  };
+
   try {
     const resolved = (await fn()) as ToolResult;
 
@@ -64,9 +152,14 @@ async function proxyCrawl4AI(
         resolved.content?.[0]?.text ||
         JSON.stringify(resolved.content) ||
         '(no details returned)';
-      log(`Crawl4AI ${toolName} error response:`, text);
+      emit('error', { cause: text });
       return {
-        content: [{ type: 'text', text: `Crawl4AI ${toolName} error: ${text}` }],
+        content: [
+          {
+            type: 'text',
+            text: `Crawl4AI ${toolName} error: ${text} (requestId: ${requestId})`,
+          },
+        ],
         isError: true,
       };
     }
@@ -74,26 +167,32 @@ async function proxyCrawl4AI(
     if (
       !resolved?.content ||
       resolved.content.length === 0 ||
-      resolved.content.every((c) => !c.text)
+      resolved.content.every(c => !c.text)
     ) {
-      log(`Crawl4AI ${toolName} returned empty content`);
+      emit('empty');
       return {
         content: [
           {
             type: 'text',
-            text: `Crawl4AI ${toolName} returned empty content. The page may have no extractable text or the crawl may have timed out.`,
+            text: `Crawl4AI ${toolName} returned empty content. The page may have no extractable text or the crawl may have timed out. (requestId: ${requestId})`,
           },
         ],
         isError: true,
       };
     }
 
+    emit('ok');
     return resolved;
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
-    log(`Crawl4AI ${toolName} threw:`, msg);
+    emit('error', { cause: msg });
     return {
-      content: [{ type: 'text', text: `Crawl4AI ${toolName} error: ${msg}` }],
+      content: [
+        {
+          type: 'text',
+          text: `Crawl4AI ${toolName} error: ${msg} (requestId: ${requestId})`,
+        },
+      ],
       isError: true,
     };
   }
@@ -129,141 +228,193 @@ export async function web_search(params: {
   limit?: number;
   engines?: string;
 }) {
-  try {
-    const results = await searchSearXNG(params.query, {
-      limit: params.limit ?? 10,
-      engines: params.engines,
-    });
-    traceJson('web_search', results.data);
-    return results.data;
-  } catch (error) {
-    // A total SearXNG outage throws (see searxng.ts) instead of returning
-    // an empty array. Before that change, the empty-array return was
-    // always recorded via traceJson, so a total failure was visible in
-    // /stats; a bare rethrow here would make it invisible again. Record
-    // the failed call — mirroring how Crawl4AI failures are recorded via
-    // trace()/isError above — then rethrow unmodified so callers still
-    // see the real error.
-    const message = error instanceof Error ? error.message : String(error);
-    recordCall('web_search', message.length, true);
-    throw error;
-  }
-}
-
-export async function web_fetch(params: Record<string, unknown>): Promise<ToolResult> {
-  // The upstream Crawl4AI `md` MCP tool is unstable on this version
-  // (BrowserContext.new_page: Connection closed while reading from the driver).
-  // Route through the working `crawl` tool and extract markdown ourselves.
-  const url = params.url as string | undefined;
-  if (!url) {
-    return {
-      content: [{ type: 'text', text: 'web_fetch error: missing required `url`' }],
-      isError: true,
-    };
-  }
-  const filter = ((params.f as string | undefined) ?? 'fit').toLowerCase();
-
-  // Recipe verified 5/5 against ufficiocamerale.it (Cloudflare-protected):
-  // enable_stealth + wait_until:"load" + delay 15s. The original recipe also
-  // used a per-request residential proxy, but the pinned Crawl4AI image
-  // forbids proxy_config from an untrusted request (400), so a configured
-  // proxy now fails fast instead of being sent — see defaultBrowserParams().
-  // We deliberately do NOT enable magic/simulate_user/override_navigator —
-  // those trigger Crawl4AI's pre-emptive CF detection and fingerprint as bot.
-  const browserParams: Record<string, unknown> = defaultBrowserParams();
-
-  // Override delay_before_return_html.
-  const delay =
-    typeof params.delay === 'number' && Number.isFinite(params.delay) ? params.delay : 15;
-
-  // `session_id` is deliberately not read from params: the pinned Crawl4AI
-  // image forbids it on CrawlerRunConfig from an untrusted request (400),
-  // and it is no longer part of WebFetchInput's published contract.
-  return proxyCrawl4AI('crawl', async () => {
-    const resp = (await callCrawlTool({
-      urls: [url],
-      browser_config: browserParams,
-      crawler_config: {
-        wait_until: 'load',
-        page_timeout: 120000,
-        delay_before_return_html: delay,
-      },
-    })) as ToolResult;
-
-    const text = resp?.content?.[0]?.text;
-    if (!text) return resp;
-
-    let parsed: unknown;
+  return runOperation('web_search', async () => {
     try {
-      parsed = JSON.parse(text);
-    } catch {
-      return resp;
+      const results = await searchSearXNG(params.query, {
+        limit: params.limit ?? 10,
+        engines: params.engines,
+      });
+      traceJson('web_search', results.data);
+      return results.data;
+    } catch (error) {
+      // A total SearXNG outage throws (see searxng.ts) instead of returning
+      // an empty array. Before that change, the empty-array return was
+      // always recorded via traceJson, so a total failure was visible in
+      // /stats; a bare rethrow here would make it invisible again. Record
+      // the failed call — mirroring how Crawl4AI failures are recorded via
+      // trace()/isError above — then rethrow unmodified so callers still
+      // see the real error.
+      const message = error instanceof Error ? error.message : String(error);
+      recordCall('web_search', message.length, true);
+      throw error;
     }
-    const r = (parsed as { results?: Array<Record<string, unknown>> })?.results?.[0];
-    if (!r) return resp;
+  });
+}
 
-    let md = '';
-    const m = r.markdown as string | { raw_markdown?: string; fit_markdown?: string } | undefined;
-    if (typeof m === 'string') {
-      md = m;
-    } else if (m && typeof m === 'object') {
-      md =
-        (filter === 'raw' ? m.raw_markdown : m.fit_markdown) || m.raw_markdown || m.fit_markdown || '';
+export async function web_fetch(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  return runOperation('web_fetch', async () => {
+    // The upstream Crawl4AI `md` MCP tool is unstable on this version
+    // (BrowserContext.new_page: Connection closed while reading from the driver).
+    // Route through the working `crawl` tool and extract markdown ourselves.
+    const url = params.url as string | undefined;
+    if (!url) {
+      return {
+        content: [
+          { type: 'text', text: 'web_fetch error: missing required `url`' },
+        ],
+        isError: true,
+      };
     }
-    if (!md) return resp;
+    const filter = ((params.f as string | undefined) ?? 'fit').toLowerCase();
 
-    return {
-      content: [{ type: 'text', text: md }],
-      isError: !r.success,
-    };
-  }).then((r) => trace('web_fetch', r));
-}
+    // Recipe verified 5/5 against ufficiocamerale.it (Cloudflare-protected):
+    // enable_stealth + wait_until:"load" + delay 15s. The original recipe also
+    // used a per-request residential proxy, but the pinned Crawl4AI image
+    // forbids proxy_config from an untrusted request (400), so a configured
+    // proxy now fails fast instead of being sent — see defaultBrowserParams().
+    // We deliberately do NOT enable magic/simulate_user/override_navigator —
+    // those trigger Crawl4AI's pre-emptive CF detection and fingerprint as bot.
+    const browserParams: Record<string, unknown> = defaultBrowserParams();
 
-export async function web_screenshot(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('screenshot', () => callScreenshotTool(params)).then((r) =>
-    trace('web_screenshot', r),
-  );
-}
+    // Override delay_before_return_html.
+    const delay =
+      typeof params.delay === 'number' && Number.isFinite(params.delay)
+        ? params.delay
+        : 15;
 
-export async function web_pdf(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('pdf', () => callPdfTool(params)).then((r) => trace('web_pdf', r));
-}
+    // `session_id` is deliberately not read from params: the pinned Crawl4AI
+    // image forbids it on CrawlerRunConfig from an untrusted request (400),
+    // and it is no longer part of WebFetchInput's published contract.
+    const result = await proxyCrawl4AI(
+      'crawl',
+      singleTarget(url),
+      async () => {
+        const resp = (await callCrawlTool({
+          urls: [url],
+          browser_config: browserParams,
+          crawler_config: {
+            wait_until: 'load',
+            page_timeout: 120000,
+            delay_before_return_html: delay,
+          },
+        })) as ToolResult;
 
-export async function web_execute_js(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('execute_js', () => callExecuteJsTool(params)).then((r) =>
-    trace('web_execute_js', r),
-  );
-}
+        const text = resp?.content?.[0]?.text;
+        if (!text) return resp;
 
-export async function web_crawl(params: Record<string, unknown>): Promise<ToolResult> {
-  return proxyCrawl4AI('crawl', () => {
-    // Merge the caller's browser_config (flat or wrapped — unwrapCrawl4AIConfig
-    // reads either) over the same stealth/proxy defaults web_fetch uses, so no
-    // caller-supplied key is silently discarded in either envelope and both
-    // entry points emit byte-identical envelopes for equivalent input.
-    // unwrapCrawl4AIConfig throws Crawl4AIConfigError for a present but
-    // non-object browser_config (a string, number, boolean, null, or
-    // array) instead of returning undefined for it — that case must NOT
-    // fall through the `?? {}` below into "use only the defaults", or a
-    // caller who asked for a specific config gets it silently swapped for
-    // the defaults with no error, which is the exact failure mode this
-    // story exists to eliminate. Doing the merge inside this callback
-    // (rather than before proxyCrawl4AI is called) means that throw is
-    // caught by proxyCrawl4AI's catch below and turned into an isError
-    // result naming the field, before any request is sent. An absent
-    // browser_config still resolves to `undefined ?? {}` — defaults only,
-    // no error — exactly as before.
-    const callerBrowserParams =
-      unwrapCrawl4AIConfig(params.browser_config, 'BrowserConfig') ?? {};
-    const merged = {
-      ...params,
-      browser_config: {
-        ...defaultBrowserParams(),
-        ...callerBrowserParams,
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          return resp;
+        }
+        const r = (parsed as { results?: Array<Record<string, unknown>> })
+          ?.results?.[0];
+        if (!r) return resp;
+
+        let md = '';
+        const m = r.markdown as
+          | string
+          | { raw_markdown?: string; fit_markdown?: string }
+          | undefined;
+        if (typeof m === 'string') {
+          md = m;
+        } else if (m && typeof m === 'object') {
+          md =
+            (filter === 'raw' ? m.raw_markdown : m.fit_markdown) ||
+            m.raw_markdown ||
+            m.fit_markdown ||
+            '';
+        }
+        if (!md) return resp;
+
+        return {
+          content: [{ type: 'text', text: md }],
+          isError: !r.success,
+        };
       },
-    };
-    return callCrawlTool(merged);
-  }).then((r) => trace('web_crawl', r));
+    );
+    return trace('web_fetch', result);
+  });
+}
+
+export async function web_screenshot(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  return runOperation('web_screenshot', async () => {
+    const url = params.url as string | undefined;
+    const result = await proxyCrawl4AI('screenshot', singleTarget(url), () =>
+      callScreenshotTool(params),
+    );
+    return trace('web_screenshot', result);
+  });
+}
+
+export async function web_pdf(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  return runOperation('web_pdf', async () => {
+    const url = params.url as string | undefined;
+    const result = await proxyCrawl4AI('pdf', singleTarget(url), () =>
+      callPdfTool(params),
+    );
+    return trace('web_pdf', result);
+  });
+}
+
+export async function web_execute_js(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  return runOperation('web_execute_js', async () => {
+    const url = params.url as string | undefined;
+    const result = await proxyCrawl4AI('execute_js', singleTarget(url), () =>
+      callExecuteJsTool(params),
+    );
+    return trace('web_execute_js', result);
+  });
+}
+
+export async function web_crawl(
+  params: Record<string, unknown>,
+): Promise<ToolResult> {
+  return runOperation('web_crawl', async () => {
+    const result = await proxyCrawl4AI(
+      'crawl',
+      multiTarget(params.urls),
+      () => {
+        // Merge the caller's browser_config (flat or wrapped —
+        // unwrapCrawl4AIConfig reads either) over the same stealth/proxy
+        // defaults web_fetch uses, so no caller-supplied key is silently
+        // discarded in either envelope and both entry points emit
+        // byte-identical envelopes for equivalent input.
+        // unwrapCrawl4AIConfig throws Crawl4AIConfigError for a present but
+        // non-object browser_config (a string, number, boolean, null, or
+        // array) instead of returning undefined for it — that case must NOT
+        // fall through the `?? {}` below into "use only the defaults", or a
+        // caller who asked for a specific config gets it silently swapped
+        // for the defaults with no error, which is the exact failure mode
+        // this story exists to eliminate. Doing the merge inside this
+        // callback (rather than before proxyCrawl4AI is called) means that
+        // throw is caught by proxyCrawl4AI's catch below and turned into an
+        // isError result naming the field, before any request is sent. An
+        // absent browser_config still resolves to `undefined ?? {}` —
+        // defaults only, no error — exactly as before.
+        const callerBrowserParams =
+          unwrapCrawl4AIConfig(params.browser_config, 'BrowserConfig') ?? {};
+        const merged = {
+          ...params,
+          browser_config: {
+            ...defaultBrowserParams(),
+            ...callerBrowserParams,
+          },
+        };
+        return callCrawlTool(merged);
+      },
+    );
+    return trace('web_crawl', result);
+  });
 }
 
 export async function web_snapshots(params: {
@@ -274,16 +425,18 @@ export async function web_snapshots(params: {
   match_type?: 'exact' | 'prefix' | 'host' | 'domain';
   filter?: string[];
 }) {
-  const snapshots = await getSnapshots({
-    url: params.url,
-    from: params.from,
-    to: params.to,
-    limit: params.limit,
-    matchType: params.match_type,
-    filter: params.filter,
+  return runOperation('web_snapshots', async () => {
+    const snapshots = await getSnapshots({
+      url: params.url,
+      from: params.from,
+      to: params.to,
+      limit: params.limit,
+      matchType: params.match_type,
+      filter: params.filter,
+    });
+    traceJson('web_snapshots', snapshots);
+    return snapshots;
   });
-  traceJson('web_snapshots', snapshots);
-  return snapshots;
 }
 
 export async function web_archive(params: {
@@ -291,23 +444,25 @@ export async function web_archive(params: {
   timestamp: string;
   original?: boolean;
 }) {
-  const { waybackUrl, content } = await getArchivedPage(params);
-  const MAX_LENGTH = 50000;
-  const truncated = content.length > MAX_LENGTH;
-  const out = {
-    waybackUrl,
-    contentLength: content.length,
-    content: truncated
-      ? content.substring(0, MAX_LENGTH) + '\n\n[Content truncated]'
-      : content,
-  };
-  traceJson('web_archive', out);
-  return out;
+  return runOperation('web_archive', async () => {
+    const { waybackUrl, content } = await getArchivedPage(params);
+    const MAX_LENGTH = 50000;
+    const truncated = content.length > MAX_LENGTH;
+    const out = {
+      waybackUrl,
+      contentLength: content.length,
+      content: truncated
+        ? content.substring(0, MAX_LENGTH) + '\n\n[Content truncated]'
+        : content,
+    };
+    traceJson('web_archive', out);
+    return out;
+  });
 }
 
 // Process-local cost/usage counters. See stats.ts.
 export async function web_usage_stats(_params: Record<string, unknown>) {
-  return getStats();
+  return runOperation('web_usage_stats', async () => getStats());
 }
 
 // ── Function map ─────────────────────────────────────────────────────

@@ -1,7 +1,15 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/sse.js';
 import { ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
+
 import { Config } from './config.js';
+import {
+  getRequestId,
+  logEvent,
+  logOperation,
+  startTimer,
+  summarizeArgShape,
+} from './logging.js';
 import type { DependencyProbeResult } from './readiness.js';
 
 // ── Crawl4AI config normalization ───────────────────────────────────────
@@ -232,12 +240,24 @@ async function getClient(): Promise<Client> {
     }
 
     const transport = new SSEClientTransport(url, {
-      eventSourceInit: { fetch: (url, init) => fetch(url, { ...init, headers: { ...headers, ...(init?.headers as Record<string, string>) } }) },
+      eventSourceInit: {
+        fetch: (url, init) =>
+          fetch(url, {
+            ...init,
+            headers: {
+              ...headers,
+              ...(init?.headers as Record<string, string>),
+            },
+          }),
+      },
       requestInit: { headers },
     });
     activeTransport = transport;
 
-    const c = new Client({ name: 'web_tools_crawl4ai_proxy', version: '1.0.0' });
+    const c = new Client({
+      name: 'web_tools_crawl4ai_proxy',
+      version: '1.0.0',
+    });
 
     // Routed through the same ownership-guarded `resetClient()` used by
     // `probeCrawl4AI`'s failure branches (see the spec's second amendment).
@@ -286,8 +306,8 @@ async function getClient(): Promise<Client> {
     //   one bad exchange" reasoning as `send()`'s case above — and the
     //   in-flight request it broke recovers on its own timeout bound
     //   (`timeoutMs` for `probeCrawl4AI`; the SDK's default for `call()`).
-    transport.onerror = (err) => {
-      process.stderr.write(`Crawl4AI transport error: ${err.message}\n`);
+    transport.onerror = err => {
+      logEvent('crawl4ai_transport_error', { message: err.message }, 'error');
       if (err instanceof SseError) {
         void resetClient(transport);
       }
@@ -362,22 +382,78 @@ async function resetClient(transport: SSEClientTransport | null): Promise<void> 
 }
 
 async function call(name: string, args: Record<string, unknown>) {
+  const requestId = getRequestId();
+  const operation = `crawl4ai.${name}`;
+
+  // Emitted before normalizeCrawl4AIArgs (which itself can reject a
+  // forbidden field) and before getClient()/callTool are attempted: the
+  // upstream MCP-to-REST bridge can reject a request with no correlatable
+  // detail of its own (see
+  // docs/issues/crawl4ai-400-burst-root-cause-unrecoverable.md), so our own
+  // record of what was attempted must already exist by the time that
+  // happens — and the same is true of a request our own normalization
+  // rejects before it is ever sent. Logs the caller-supplied args' shape,
+  // not the normalized one: summarizeArgShape only reports top-level type
+  // tokens (`object`, `array[n]`, ...), which is identical whether
+  // browser_config/crawler_config are flat or normalizeCrawl4AIArgs's
+  // wrapped { type, params } form, so logging before normalization loses
+  // no information.
+  logEvent('crawl4ai_request_shape', {
+    requestId,
+    operation,
+    argShape: summarizeArgShape(args),
+  });
+
+  // Deliberately outside the try/catch below: a rejection here (a
+  // forbidden field — see assertNoForbiddenFields) is a local validation
+  // failure, not a dispatch failure, so it must not reset the shared
+  // client/connecting state or be misreported as a 'crawl4ai_dispatch'
+  // outcome. It propagates directly to the caller, where functions.ts's
+  // proxyCrawl4AI catches it and turns it into an isError result naming
+  // the field, before any request is sent.
   const normalizedArgs = normalizeCrawl4AIArgs(args);
-  const c = await getClient();
+
+  // A second record after the call carries the outcome and duration at
+  // this dispatch layer — distinct from (and emitted for every
+  // Crawl4AI-backed call, unlike) functions.ts's proxyCrawl4AI, which adds
+  // target-URL context but only wraps five of the six Crawl4AI-backed
+  // tools. web_archive reaches Crawl4AI through this function directly
+  // (getArchivedPage -> callMdTool), never through proxyCrawl4AI, so this
+  // is the only place its Crawl4AI call gets any outcome/duration
+  // attribution at all.
+  const elapsed = startTimer();
   try {
-    return await c.callTool({ name, arguments: normalizedArgs });
+    const c = await getClient();
+    const result = await c.callTool({ name, arguments: normalizedArgs });
+    logOperation('crawl4ai_dispatch', {
+      operation,
+      requestId,
+      outcome: (result as { isError?: unknown })?.isError ? 'error' : 'ok',
+      durationMs: elapsed(),
+    });
+    return result;
   } catch (err) {
+    logOperation('crawl4ai_dispatch', {
+      operation,
+      requestId,
+      outcome: 'error',
+      durationMs: elapsed(),
+      cause: err instanceof Error ? err.message : String(err),
+    });
     client = null;
     connecting = null;
     throw err;
   }
 }
 
-export const callCrawlTool = (args: Record<string, unknown>) => call('crawl', args);
+export const callCrawlTool = (args: Record<string, unknown>) =>
+  call('crawl', args);
 export const callMdTool = (args: Record<string, unknown>) => call('md', args);
-export const callScreenshotTool = (args: Record<string, unknown>) => call('screenshot', args);
+export const callScreenshotTool = (args: Record<string, unknown>) =>
+  call('screenshot', args);
 export const callPdfTool = (args: Record<string, unknown>) => call('pdf', args);
-export const callExecuteJsTool = (args: Record<string, unknown>) => call('execute_js', args);
+export const callExecuteJsTool = (args: Record<string, unknown>) =>
+  call('execute_js', args);
 
 /**
  * Races `getClient()`'s connect step against `timeoutMs`. Unlike the
