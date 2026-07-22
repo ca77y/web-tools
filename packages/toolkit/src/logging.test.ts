@@ -319,10 +319,17 @@ describe('logEvent / logOperation - every field value is sanitized by default', 
     test('a 1MB adversarial token completes within a bounded time budget, not quadratic', () => {
       // Pathological shape for the old, unbounded-charset regex: many
       // "@"-adjacent runs following "https://" with no "/", "?", or "#" to
-      // stop the lazy userinfo scan early, at a size where the old code
-      // measured ~32s of synchronous blocking (16KB -> 7ms, 128KB -> 478ms,
-      // 512KB -> 7.8s: clean O(n^2)). The fixed regex is linear; this
-      // asserts a generous but firm ceiling, not a wall-clock guess.
+      // stop the lazy userinfo scan early.
+      //
+      // This guards a property (sanitizing a 1MB adversarial value stays
+      // within a bounded budget), not a reproduction. The originally
+      // reported quadratic blow-up could not be re-measured on this
+      // machine, so no timing figure for the old regex is asserted here —
+      // quoting one would cement a number this test cannot re-derive. The
+      // regex fix stands on its own for correctness (the userinfo class
+      // must exclude "/" for the fabrication case); this ceiling is only a
+      // cheap backstop against a future rewrite reintroducing super-linear
+      // scanning.
       const pathological = 'https://' + 'a@'.repeat(500_000) + '?';
       const start = performance.now();
       const { stderr } = captureStreams(() =>
@@ -336,7 +343,7 @@ describe('logEvent / logOperation - every field value is sanitized by default', 
       const elapsed = performance.now() - start;
       assert.ok(
         elapsed < 500,
-        `sanitizing a 1MB adversarial value took ${elapsed.toFixed(1)}ms; expected well under 500ms for linear behavior (the quadratic bug took ~32000ms at this size)`,
+        `sanitizing a 1MB adversarial value took ${elapsed.toFixed(1)}ms; expected well under 500ms for linear behavior`,
       );
       // Also confirm it actually still parses as one valid, bounded line.
       assert.equal(stderr.length, 1);
