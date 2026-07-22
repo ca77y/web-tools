@@ -5,7 +5,7 @@ title: Split liveness from dependency readiness in health reporting
 
 # Split liveness from dependency readiness in health reporting
 
-- [<] Split liveness from dependency readiness in health reporting #improvement ⏫ 🆔 health-liveness-readiness-split
+- [?] Split liveness from dependency readiness in health reporting #improvement ⏫ 🆔 health-liveness-readiness-split
     - Phase: Phase 3 - Operable Service
     - Problem: `GET /health` proves only that the Express process can answer an HTTP request. It reports green during a near-total upstream outage, so an operator (and Railway) cannot tell a healthy stack from one where every SearXNG call times out and Crawl4AI MCP calls fail. Observed in production on the `Agentic-Search` Railway project: the public `/health` endpoint returned HTTP 200 throughout an incident window in which all three application SearXNG requests timed out and multiple Crawl4AI MCP calls failed.
     - Current implementation, `packages/api/src/index.ts:113-115` (verbatim at HEAD):
