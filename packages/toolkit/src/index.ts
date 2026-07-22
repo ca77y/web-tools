@@ -28,6 +28,20 @@ export {
 export { Config } from './config.js';
 export { getStats, recordCall } from './stats.js';
 export { SearchProviderError } from './searxng.js';
+export {
+  checkReadiness,
+  PROBE_TIMEOUT_MS,
+  READINESS_CACHE_TTL_MS,
+} from './readiness.js';
+export {
+  Crawl4AIConfigError,
+  normalizeCrawl4AIArgs,
+  unwrapCrawl4AIConfig,
+  // Test-only teardown for a test file driving a real call through the
+  // singleton Crawl4AI client against an in-process capture server (see
+  // crawl4ai.ts for why this is needed). Not used by any production code.
+  closeCrawl4AIClient,
+} from './crawl4ai.js';
 
 export {
   adoptOrMintRequestId,
@@ -53,3 +67,10 @@ export type {
 } from './types.js';
 
 export type { SearXNGFailureReason } from './searxng.js';
+export type {
+  ReadinessReport,
+  ReadinessStatus,
+  DependencyProbeResult,
+  DependencyProbeStatus,
+  DependencyProbeDetail,
+} from './readiness.js';

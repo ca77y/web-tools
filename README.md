@@ -101,13 +101,17 @@ Returns the full CrawlResult JSON including markdown, links, media, and JS execu
 
 Crawl one or more URLs and extract their content using Crawl4AI.
 
-| Parameter        | Type                | Description                    |
-| ---------------- | ------------------- | ------------------------------ |
-| `urls`           | string[] (required) | List of URLs to crawl          |
-| `browser_config` | object (optional)   | Crawl4AI browser configuration |
-| `crawler_config` | object (optional)   | Crawl4AI crawler configuration |
+| Parameter        | Type                | Description                                                      |
+| ---------------- | ------------------- | ---------------------------------------------------------------- |
+| `urls`           | string[] (required) | List of URLs to crawl                                            |
+| `browser_config` | object (optional)   | Crawl4AI browser configuration; merged over the stealth defaults |
+| `crawler_config` | object (optional)   | Crawl4AI crawler configuration                                   |
 
 Returns the extracted content from each URL.
+
+Both config objects may be written flat (`{"css_selector": "main"}`) or wrapped (`{"type": "CrawlerRunConfig", "params": {...}}`); Web Tools normalizes either into the one envelope Crawl4AI is sent. Your keys are merged with the defaults rather than replacing or silently dropping them.
+
+The pinned Crawl4AI image refuses a set of configuration fields from a network caller, including `proxy_config`, `cdp_url`, `cookies`, `headers` and `extra_args` on `browser_config`, and `session_id`, `magic`, `js_code`, `simulate_user` and `override_navigator` on `crawler_config`. Supplying one returns an error naming the field rather than a request Crawl4AI rejects. The full sets are in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
 ### `web_snapshots`
 
@@ -211,6 +215,59 @@ curl -X POST https://your-server.up.railway.app/api/v0/web_fetch \
   -d '{"url": "https://example.com"}'
 ```
 
+### Operational Endpoints
+
+Three endpoints exist alongside the tools. They answer three different questions — do not substitute one for another.
+
+```bash
+# Liveness — unauthenticated, no API key needed
+curl https://your-server.up.railway.app/health
+
+# Readiness — requires the API key
+curl https://your-server.up.railway.app/ready \
+  -H "Authorization: Bearer your-api-key"
+
+# Usage counters — requires the API key
+curl https://your-server.up.railway.app/stats \
+  -H "Authorization: Bearer your-api-key"
+```
+
+#### `GET /health` — is the process alive?
+
+**Unauthenticated.** Always returns HTTP 200 with `{"status":"ok"}` while the process is running, does no network I/O, and never carries dependency state.
+
+It proves only that the server can answer an HTTP request. It proves **nothing** about SearXNG, Crawl4AI, Redis, target sites, or the Wayback Machine — a fully broken stack still returns 200 here.
+
+That is deliberate: `/health` is the platform health check path on the deployed service. If it went red during an upstream outage, the platform would restart healthy containers in a loop and block deploys exactly when a fix needs to ship. Point your platform health check here, and never point it at `/ready`.
+
+#### `GET /ready` — are the dependencies usable?
+
+**Requires the API key**, because it exposes internal topology and dependency failure detail.
+
+**Always returns HTTP 200**, even when everything is down — read the verdict from the body, never from the status code:
+
+```json
+{
+  "status": "degraded",
+  "checked_at": "2026-07-19T12:00:00.000Z",
+  "dependencies": {
+    "searxng":  { "status": "unhealthy", "latency_ms": 3001, "detail": "timeout" },
+    "crawl4ai": { "status": "ok", "latency_ms": 42 }
+  }
+}
+```
+
+- `status` rolls up the dependencies: `ok` (all healthy), `degraded` (some healthy), `unhealthy` (none healthy).
+- Each dependency is `ok` or `unhealthy`. `detail` appears only when `unhealthy`, and is one of `timeout`, `network_error`, `protocol_error`, or `http_status:<code>` — never upstream text, so no URL or credential can leak into the response.
+- SearXNG is probed with a cheap reachability request; Crawl4AI with a cheap MCP `tools/list` call. Both run concurrently, each bounded by a 3-second timeout.
+- Results are cached for up to 5 seconds, so polling this endpoint cannot flood your own upstreams. `checked_at` is when the probes actually ran — a repeated value means you got a cached report.
+
+It proves SearXNG is reachable and Crawl4AI answers MCP. It does **not** prove that a search will return results, that a browser can launch, that a given target site is reachable, or that the Wayback Machine is up.
+
+#### `GET /stats` — how much has been used?
+
+**Requires the API key.** Returns the same process-local counters as the `web_usage_stats` tool. They reset on restart; they are operational estimates, not durable billing records.
+
 ### CLI
 
 ```bash
@@ -224,7 +281,11 @@ web-tools fetch https://example.com
 web-tools screenshot https://example.com
 
 # Crawl multiple URLs
-web-tools crawl https://a.com https://b.com --magic
+web-tools crawl https://a.com https://b.com --selector main
+
+# Note: --magic maps to the Crawl4AI `magic` field, which the pinned
+# Crawl4AI image refuses from a network caller. The command now fails
+# fast with an error naming the field instead of appearing to succeed.
 
 # Wayback Machine
 web-tools snapshots https://example.com --from 20200101
@@ -279,6 +340,11 @@ The **SearXNG** service should build from the repo instead of a Docker image:
 - **Root Directory**: `services/searxng`
 - **Optional env var**: `PROXY_URL` — proxy for outgoing search requests (e.g. `socks5://user:pass@host:port`)
 
+The **Crawl4AI** service should also build from the repo instead of a Docker image:
+- **Source**: same GitHub repo
+- **Root Directory**: `services/crawl4ai`
+- **Why**: the custom image repairs the upstream Playwright browser path and pins the Crawl4AI version
+
 ## Quick Start (Local)
 
 ### 1. Clone and install
@@ -301,7 +367,15 @@ cp .env.example .env.local
 docker compose up -d redis searxng crawl4ai
 ```
 
-This starts Redis, SearXNG, and Crawl4AI. Then run the server:
+This starts Redis, SearXNG, and Crawl4AI.
+
+**Before the stack is usable for crawls:** export `CRAWL4AI_API_TOKEN` in your shell before the command above, e.g. `export CRAWL4AI_API_TOKEN=<token>` — setting it only in `.env.local` does not reach the `crawl4ai` service (Compose interpolates `${CRAWL4AI_API_TOKEN}` from your shell environment or a default `.env` file, never from `.env.local`; the host-run server below does read `.env.local`, so the shell export is needed for the container, not for it). Without a token, Crawl4AI binds `127.0.0.1` inside its own container and its published port refuses connections from the host, so `pnpm run start` below still boots, but every `web_fetch`, crawl, screenshot, PDF, and JavaScript-execution request fails.
+
+**First run only:** the SearXNG and Crawl4AI images build locally instead of pulling, so it takes noticeably longer than a pull — this is expected, not a hang.
+
+The Crawl4AI image is amd64-only (its Playwright browser-binary check only resolves on amd64). `docker-compose.yml` pins the `crawl4ai` service to `platform: linux/amd64`, so Compose builds and runs it under emulation automatically on Apple Silicon or other arm64 hosts — no extra configuration needed, though emulated builds and requests run slower than native.
+
+Then run the server:
 
 ```bash
 SEARXNG_URL=http://localhost:8080 CRAWL4AI_URL=http://localhost:11235 pnpm run start
@@ -314,6 +388,8 @@ The server is available at `http://localhost:3000`.
 ```bash
 docker compose up
 ```
+
+As in step 3, the first run builds the images locally before starting, so expect several minutes on a cold cache. Unlike step 3, `web_tools` now runs in its own container, which reads `CRAWL4AI_API_TOKEN` only from `.env.local` (via `env_file`), not from your shell — while Crawl4AI itself still reads the token only from your shell. So before this command, set the same value in **both** places: uncomment and set `CRAWL4AI_API_TOKEN` in `.env.local`, and also `export CRAWL4AI_API_TOKEN=<token>` in your shell. Skipping either leaves `web_tools` unable to authenticate with Crawl4AI, or Crawl4AI unreachable altogether. Apple Silicon and other arm64 hosts need no extra configuration — see step 3 for why.
 
 ## Environment Variables
 
@@ -332,7 +408,9 @@ The `API_KEY` environment variable is **required**.
 
 On Railway, the key is auto-generated at deploy time (via `${{secret()}}`). For local development, set it in your `.env.local` file.
 
-Clients provide the key as a `Bearer` token in the `Authorization` header or as an `?api_key=` query parameter. The `/health` endpoint is unauthenticated.
+Clients provide the key as a `Bearer` token in the `Authorization` header or as an `?api_key=` query parameter.
+
+Only `/health` is unauthenticated. Everything else — MCP, REST discovery, REST tool execution, `/ready`, and `/stats` — requires the key. See [Operational Endpoints](#operational-endpoints).
 
 ## Request Correlation
 

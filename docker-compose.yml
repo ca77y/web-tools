@@ -16,7 +16,8 @@ services:
       - redis
 
   crawl4ai:
-    image: unclecode/crawl4ai:latest
+    build: ./services/crawl4ai
+    platform: linux/amd64
     ports:
       - "11235:11235"
     environment:

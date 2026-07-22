@@ -27,18 +27,10 @@ export const WebFetchInput = z.object({
   provider: z.string().optional().describe('LLM provider for LLM filter (e.g. "openai/gpt-4")'),
   temperature: z.number().optional().describe('Temperature for LLM filter'),
   base_url: z.string().optional().describe('Base URL override for the LLM provider'),
-  session_id: z
-    .string()
-    .optional()
-    .describe(
-      'Crawl4AI session id — pass the same string across calls to reuse the browser context (cookies survive, so cf_clearance from the first call skips the JS challenge on subsequent calls).',
-    ),
   delay: z
     .number()
     .optional()
-    .describe(
-      'Override delay_before_return_html (seconds, default 15). Drop to ~3 for "warm" calls in an existing session_id where CF is already cleared.',
-    ),
+    .describe('Override delay_before_return_html (seconds, default 15).'),
 });
 
 export const WebScreenshotInput = z.object({
@@ -91,11 +83,8 @@ export const WebCrawlInput = z.object({
       delay_before_return_html: z.number().optional().describe('Delay in seconds before extracting HTML (default: 0.1)'),
       mean_delay: z.number().optional().describe('Mean delay between actions in seconds (default: 0.1)'),
       max_range: z.number().optional().describe('Max random range added to delays (default: 0.3)'),
-      semaphore_count: z.number().optional().describe('Max concurrent operations (default: 5)'),
 
       // Page Interaction
-      js_code: z.union([z.string(), z.array(z.string())]).optional().describe('JavaScript code to execute on the page before extraction'),
-      js_only: z.boolean().optional().describe('Only execute JS without re-fetching the page (requires session_id)'),
       ignore_body_visibility: z.boolean().optional().describe('Proceed even if body is not visible (default: true)'),
       scan_full_page: z.boolean().optional().describe('Scroll through the entire page to trigger lazy-loaded content'),
       scroll_delay: z.number().optional().describe('Delay between scroll steps in seconds (default: 0.2)'),
@@ -104,14 +93,10 @@ export const WebCrawlInput = z.object({
       flatten_shadow_dom: z.boolean().optional().describe('Flatten shadow DOM elements for extraction'),
       remove_overlay_elements: z.boolean().optional().describe('Remove popup/overlay elements blocking content'),
       remove_consent_popups: z.boolean().optional().describe('Automatically dismiss cookie consent and privacy popups'),
-      simulate_user: z.boolean().optional().describe('Simulate real user behavior to bypass bot detection'),
-      override_navigator: z.boolean().optional().describe('Override navigator properties to avoid bot detection'),
-      magic: z.boolean().optional().describe('Enable all anti-bot measures at once'),
       adjust_viewport_to_content: z.boolean().optional().describe('Adjust viewport size to fit page content'),
 
-      // Caching & Session
+      // Caching
       cache_mode: z.string().optional().describe('Cache mode for the crawl'),
-      session_id: z.string().optional().describe('Session ID to reuse browser session across crawls'),
 
       // Media Handling
       screenshot: z.boolean().optional().describe('Capture a screenshot of the page'),
