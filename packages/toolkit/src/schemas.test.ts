@@ -150,7 +150,13 @@ describe('WebFetchInput no longer publishes session_id', () => {
     );
   });
 
-  test('the other web_fetch parameters the handler still reads survive', () => {
+  test('the other declared web_fetch parameters survive', () => {
+    // Only `url`, `f`, and `delay` are read by the handler (`web_fetch` in
+    // functions.ts). `q` and `c` are declared but currently unread — this
+    // test pins that removing `session_id` did not take the rest of the
+    // shape with it, not that every key here is live. Pruning the dead
+    // filter params is tracked separately by
+    // `docs/tasks/prune-dead-web-fetch-filter-params.md`.
     for (const key of ['url', 'f', 'q', 'c', 'delay']) {
       assert.ok(
         key in WebFetchInput.shape,
