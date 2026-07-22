@@ -5,7 +5,7 @@ title: Bound the Crawl4AI monitor calls used by browser rotation
 
 # Bound the Crawl4AI monitor calls used by browser rotation
 
-- [ ] Bound the Crawl4AI monitor calls used by browser rotation #bug ⏫ 🆔 rotation-monitor-call-timeouts
+- [<] Bound the Crawl4AI monitor calls used by browser rotation #bug ⏫ 🆔 rotation-monitor-call-timeouts
   - Phase: Phase 1 - Reliable Core
   - **Problem.** The `rotate()` routine in `packages/toolkit/src/rotation.ts:53-95` performs two unbounded HTTP calls against the Crawl4AI admin surface — `GET /monitor/browsers` and `POST /monitor/actions/kill_browser` — using bare `fetch` with no `AbortSignal`, no timeout, and no retry. Relevant code at HEAD:
     - ```ts

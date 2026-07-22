@@ -5,7 +5,7 @@ title: Bound and recover the shared Crawl4AI MCP client
 
 # Bound and recover the shared Crawl4AI MCP client
 
-- [ ] Bound and recover the shared Crawl4AI MCP client #bug ⏫ 🆔 crawl4ai-mcp-client-timeout-and-recovery
+- [<] Bound and recover the shared Crawl4AI MCP client #bug ⏫ 🆔 crawl4ai-mcp-client-timeout-and-recovery
   - Phase: Phase 1 - Reliable Core
   - Problem: production Web Tools logged two call-level MCP timeouts against Crawl4AI on 2026-07-18. The shared MCP client has no explicit call timeout, discards its client on failure without closing it, does not retry the failed operation, and can latch a permanently rejected connection promise.
     - Observed Railway production log lines (Tools service, deployment `377406fe-1e9d-49fe-a403-a84eaac46d23`, commit `423f31b28976cb694881f431a96a46cfcc4b5b30`):

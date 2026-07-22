@@ -5,7 +5,7 @@ title: Measure Crawl4AI concurrency and memory limits under load
 
 # Measure Crawl4AI concurrency and memory limits under load
 
-- [ ] Measure Crawl4AI concurrency and memory limits under load #research 🔽 🆔 measure-crawl-concurrency-limits
+- [<] Measure Crawl4AI concurrency and memory limits under load #research 🔽 🆔 measure-crawl-concurrency-limits
     - Phase: Phase 3 - Operable Service
     - **Why this is research, not implementation.** Production evidence shows a memory and concurrency *risk signal*, but no proven failure. Nothing in the retained logs justifies picking a concurrency cap or a memory limit yet. This story exists to produce that evidence; it must be refined into a `#feature`/`#improvement`/`#bug` story before any limit is implemented.
     - **Observed evidence (Crawl4AI service, Railway, 2026-07-18 incident window).**
