@@ -215,6 +215,59 @@ curl -X POST https://your-server.up.railway.app/api/v0/web_fetch \
   -d '{"url": "https://example.com"}'
 ```
 
+### Operational Endpoints
+
+Three endpoints exist alongside the tools. They answer three different questions — do not substitute one for another.
+
+```bash
+# Liveness — unauthenticated, no API key needed
+curl https://your-server.up.railway.app/health
+
+# Readiness — requires the API key
+curl https://your-server.up.railway.app/ready \
+  -H "Authorization: Bearer your-api-key"
+
+# Usage counters — requires the API key
+curl https://your-server.up.railway.app/stats \
+  -H "Authorization: Bearer your-api-key"
+```
+
+#### `GET /health` — is the process alive?
+
+**Unauthenticated.** Always returns HTTP 200 with `{"status":"ok"}` while the process is running, does no network I/O, and never carries dependency state.
+
+It proves only that the server can answer an HTTP request. It proves **nothing** about SearXNG, Crawl4AI, Redis, target sites, or the Wayback Machine — a fully broken stack still returns 200 here.
+
+That is deliberate: `/health` is the platform health check path on the deployed service. If it went red during an upstream outage, the platform would restart healthy containers in a loop and block deploys exactly when a fix needs to ship. Point your platform health check here, and never point it at `/ready`.
+
+#### `GET /ready` — are the dependencies usable?
+
+**Requires the API key**, because it exposes internal topology and dependency failure detail.
+
+**Always returns HTTP 200**, even when everything is down — read the verdict from the body, never from the status code:
+
+```json
+{
+  "status": "degraded",
+  "checked_at": "2026-07-19T12:00:00.000Z",
+  "dependencies": {
+    "searxng":  { "status": "unhealthy", "latency_ms": 3001, "detail": "timeout" },
+    "crawl4ai": { "status": "ok", "latency_ms": 42 }
+  }
+}
+```
+
+- `status` rolls up the dependencies: `ok` (all healthy), `degraded` (some healthy), `unhealthy` (none healthy).
+- Each dependency is `ok` or `unhealthy`. `detail` appears only when `unhealthy`, and is one of `timeout`, `network_error`, `protocol_error`, or `http_status:<code>` — never upstream text, so no URL or credential can leak into the response.
+- SearXNG is probed with a cheap reachability request; Crawl4AI with a cheap MCP `tools/list` call. Both run concurrently, each bounded by a 3-second timeout.
+- Results are cached for up to 5 seconds, so polling this endpoint cannot flood your own upstreams. `checked_at` is when the probes actually ran — a repeated value means you got a cached report.
+
+It proves SearXNG is reachable and Crawl4AI answers MCP. It does **not** prove that a search will return results, that a browser can launch, that a given target site is reachable, or that the Wayback Machine is up.
+
+#### `GET /stats` — how much has been used?
+
+**Requires the API key.** Returns the same process-local counters as the `web_usage_stats` tool. They reset on restart; they are operational estimates, not durable billing records.
+
 ### CLI
 
 ```bash
@@ -355,7 +408,9 @@ The `API_KEY` environment variable is **required**.
 
 On Railway, the key is auto-generated at deploy time (via `${{secret()}}`). For local development, set it in your `.env.local` file.
 
-Clients provide the key as a `Bearer` token in the `Authorization` header or as an `?api_key=` query parameter. The `/health` endpoint is unauthenticated.
+Clients provide the key as a `Bearer` token in the `Authorization` header or as an `?api_key=` query parameter.
+
+Only `/health` is unauthenticated. Everything else — MCP, REST discovery, REST tool execution, `/ready`, and `/stats` — requires the key. See [Operational Endpoints](#operational-endpoints).
 
 ## License
 

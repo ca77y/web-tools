@@ -29,6 +29,11 @@ export { Config } from './config.js';
 export { getStats, recordCall } from './stats.js';
 export { SearchProviderError } from './searxng.js';
 export {
+  checkReadiness,
+  PROBE_TIMEOUT_MS,
+  READINESS_CACHE_TTL_MS,
+} from './readiness.js';
+export {
   Crawl4AIConfigError,
   normalizeCrawl4AIArgs,
   unwrapCrawl4AIConfig,
@@ -47,3 +52,10 @@ export type {
 } from './types.js';
 
 export type { SearXNGFailureReason } from './searxng.js';
+export type {
+  ReadinessReport,
+  ReadinessStatus,
+  DependencyProbeResult,
+  DependencyProbeStatus,
+  DependencyProbeDetail,
+} from './readiness.js';

@@ -54,14 +54,14 @@ Both trade a genuine correctness property for a monitoring convenience. Neither 
 ### Why the obvious workarounds do not apply
 
 - Inspecting the response body in a monitor is possible in principle, but the API creates a stateless MCP server and transport per request ([`../ARCHITECTURE.md`](../ARCHITECTURE.md)), and the response is a JSON-RPC envelope whose tool payload is a JSON string nested inside `content[].text`. This is a fragile thing to assert on and couples an external monitor to an internal serialization detail.
-- `GET /health` cannot cover this either. It currently proves only that the API process can answer an HTTP request and returns `{"status":"ok"}` without checking SearXNG, Crawl4AI, Redis, or proxy connectivity. Deepening it is separate work under Phase 3 of [`../PRODUCT.md`](../PRODUCT.md) and would report *dependency* health, not the outcome of a specific tool call.
+- Neither `GET /health` nor `GET /ready` can cover this. `/health` proves only that the API process can answer an HTTP request and returns `{"status":"ok"}` without checking SearXNG, Crawl4AI, Redis, or proxy connectivity — deliberately and permanently so, since it is the platform health check path. `GET /ready` now exists and does probe SearXNG and Crawl4AI, but it reports *dependency* health, not the outcome of a specific tool call: a `web_search` that fails on one target while both dependencies are reachable leaves `/ready` reporting `ok`. See [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Health And Statistics".
 
 ## Evidence
 
 - `packages/api/src/mcp.ts:39-45` - tool errors returned in-band with `isError: true`
 - `packages/api/src/handler.ts:11-18` - REST maps the same error to HTTP 500
-- `packages/api/src/index.ts:114` - `res.json({ status: 'ok' })`, the unconditional health response
-- [`../ARCHITECTURE.md`](../ARCHITECTURE.md) - "`GET /health` currently proves that the API process can answer an HTTP request. It does not prove that Crawl4AI, SearXNG, Redis, target websites, or Wayback Machine are healthy."
+- `packages/api/src/index.ts:122-124` - `res.json({ status: 'ok' })`, the unconditional health response
+- [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Health And Statistics" - "`GET /health` ... proves exactly one thing: the API process can accept a connection and answer an HTTP request. It proves **nothing** about Crawl4AI, SearXNG, Redis, target websites, or the Wayback Machine."
 - Railway `Agentic-Search` production, 2026-07-17 to 2026-07-18 UTC: search providers were broadly blocked while the Tools service reported healthy throughout.
 
 ## Conclusion
@@ -69,10 +69,10 @@ Both trade a genuine correctness property for a monitoring convenience. Neither 
 Correct MCP behavior and HTTP-status-based failure monitoring are not reconcilable on the `/mcp` route. Operators who need to detect tool-level failure should not rely on `/mcp` HTTP status. The supported paths are:
 
 - Structured application logs carrying operation, outcome, and provider - tracked by [`../tasks/request-correlation-logging.md`](../tasks/request-correlation-logging.md).
-- A dependency-aware health or readiness endpoint - tracked by [`../tasks/health-liveness-readiness-split.md`](../tasks/health-liveness-readiness-split.md).
+- The dependency-aware readiness endpoint, which now ships as `GET /ready` ([`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Health And Statistics"). It narrows the blind spot to tool-level failures with healthy dependencies; it does not close it, which is the point of this note.
 - Monitoring the REST route, where status codes do carry the outcome once [`../tasks/distinguish-search-failure-from-empty-results.md`](../tasks/distinguish-search-failure-from-empty-results.md) lands.
 
-Both of the first two belong to Phase 3 of [`../PRODUCT.md`](../PRODUCT.md).
+The first two both belong to Phase 3 of [`../PRODUCT.md`](../PRODUCT.md); the readiness half of it has landed.
 
 Revisit if a future MCP specification revision defines a transport-level signal for tool failure.
 </content>

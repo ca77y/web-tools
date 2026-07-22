@@ -6,12 +6,12 @@ No solution identified on our side. Recorded so the question is not re-opened wi
 
 ## Related stories
 
-- [`../tasks/health-liveness-readiness-split.md`](../tasks/health-liveness-readiness-split.md) - adds a dependency readiness endpoint covering SearXNG and Crawl4AI. It deliberately does **not** report proxy status, for the reasons below. It reduces the symptom (health blind to dependencies) without addressing proxy egress at all.
+- [`../tasks/health-liveness-readiness-split.md`](../tasks/health-liveness-readiness-split.md) - shipped `GET /ready`, a dependency readiness endpoint covering SearXNG and Crawl4AI ([`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Health And Statistics"). It deliberately does **not** report proxy status, for the reasons below. It reduced the symptom (health blind to dependencies) without addressing proxy egress at all.
 - [`rotation-egress-ip-change-unverifiable.md`](./rotation-egress-ip-change-unverifiable.md) - closely related: the same tunnel-ownership constraint that makes a proxy health probe meaningless also prevents verifying that a rotation actually changed the exit IP.
 
 ## The problem
 
-Web Tools health reporting is being split into liveness and dependency readiness (see [`../tasks/health-liveness-readiness-split.md`](../tasks/health-liveness-readiness-split.md)). One dependency named in the original production incident review was "proxy connectivity or exit-IP health": browser-backed tools egress through an upstream residential proxy (iProyal), and during the incident window that egress path was broadly blocked by search and target providers (403s, CAPTCHAs, rate limits, unusual-traffic responses, timeouts). Health reporting stayed green throughout.
+Web Tools health reporting has been split into liveness (`GET /health`) and dependency readiness (`GET /ready`); see [`../ARCHITECTURE.md`](../ARCHITECTURE.md), "Health And Statistics". One dependency named in the original production incident review was "proxy connectivity or exit-IP health": browser-backed tools egress through an upstream residential proxy (iProyal), and during the incident window that egress path was broadly blocked by search and target providers (403s, CAPTCHAs, rate limits, unusual-traffic responses, timeouts). Health reporting stayed green throughout.
 
 The desired check would be: "is our proxy egress path currently usable?" No implementable version of that check was identified.
 
@@ -35,7 +35,7 @@ The desired check would be: "is our proxy egress path currently usable?" No impl
 
 ## Current disposition
 
-- The readiness endpoint will not report a proxy dependency status. This is stated as explicit out-of-scope on the story card rather than left as a silent gap.
+- The readiness endpoint does not report a proxy dependency status. `GET /ready` shipped covering SearXNG and Crawl4AI only; the omission is explicit and recorded here rather than left as a silent gap.
 - Proxy-path degradation is better surfaced **reactively, from real traffic**, than proactively from a probe: consecutive anti-bot signals are already counted and acted upon in `packages/toolkit/src/rotation.ts`, and the honest place to expose that state is observability (rotation counts, per-outcome error classification, block-rate over recent requests), not a health check.
 - Documenting proxy egress as an unmonitored dependency in operator-facing deployment guidance is the realistic mitigation.
 
