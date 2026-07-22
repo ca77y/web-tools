@@ -14,10 +14,18 @@ const USER_AGENT_MAX_LENGTH = 200;
  * request context for the rest of the request, and emits one `http_request`
  * operation record when the response finishes.
  *
- * Mounted immediately after `express.json()` and strictly before the auth
- * middleware, so a request the auth middleware rejects with 403 — which
- * terminates the chain without calling `next()` — is still logged; that is
- * exactly the traffic the `GET /mcp` 405 probing issue needs attributed.
+ * Mounted first — before `express.json()` and strictly before the auth
+ * middleware — so every request is logged no matter which layer ends it:
+ * a request the auth middleware rejects with 403 (which terminates the
+ * chain without calling `next()`), and a request `express.json()` itself
+ * rejects with 400 (malformed body) or 413 (oversized body), which it
+ * ends via `next(err)` — skipping all regular middleware mounted after
+ * it. That probing traffic is exactly what the `GET /mcp` 405 issue
+ * needs attributed, so it must not depend on the body parsing cleanly.
+ *
+ * Mounting before the body parser is safe because nothing here reads
+ * `req.body`; only `req.headers`, `req.method`, `req.path`, and
+ * `res.statusCode` are touched.
  *
  * Logs `req.path`, never `req.originalUrl` / `req.url` / `req.query` /
  * `req.headers` wholesale, so neither the `Authorization` header value nor

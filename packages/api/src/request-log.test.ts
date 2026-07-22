@@ -95,13 +95,17 @@ function rawGetNoUserAgent(baseUrl: string, path: string): Promise<void> {
   });
 }
 
-/** Spins up a real Express server on a real socket and tears it down after `fn`. */
-async function withServer(
+/**
+ * Spins up a real Express server on a real socket with *nothing* mounted
+ * ahead of `build`, so a test can reproduce production's exact mount order
+ * (`requestLogMiddleware` first, then `express.json()`). Tears down after
+ * `fn`.
+ */
+async function withBareServer(
   build: (app: express.Express) => void,
   fn: (baseUrl: string) => Promise<void>,
 ): Promise<void> {
   const app = express();
-  app.use(express.json());
   build(app);
 
   const server = app.listen(0, '127.0.0.1');
@@ -112,6 +116,21 @@ async function withServer(
   } finally {
     await new Promise<void>(resolve => server.close(() => resolve()));
   }
+}
+
+/**
+ * Spins up a real Express server with `express.json()` already mounted —
+ * the convenient default for tests that only care about the middleware's
+ * own behaviour, not about mount order.
+ */
+async function withServer(
+  build: (app: express.Express) => void,
+  fn: (baseUrl: string) => Promise<void>,
+): Promise<void> {
+  await withBareServer(app => {
+    app.use(express.json());
+    build(app);
+  }, fn);
 }
 
 describe('requestLogMiddleware - request-ID adoption, minting, and sanitization', () => {
@@ -292,6 +311,49 @@ describe('requestLogMiddleware - the http_request record', () => {
         );
         assert.equal(rec.status, 403);
         assert.equal(rec.outcome, 'error');
+        assert.equal(rec.userAgent, 'probe-bot/1.0');
+      },
+    );
+  });
+
+  test('a request express.json() rejects (malformed body, 400) is still logged', async () => {
+    await withBareServer(
+      app => {
+        // Production mount order (index.ts): the log middleware first, then
+        // the body parser. express.json() rejects a malformed body via
+        // next(err), which skips every *regular* middleware mounted after
+        // it — so a middleware mounted below it would never run and the
+        // request would go unrecorded entirely.
+        app.use(requestLogMiddleware);
+        app.use(express.json());
+        app.post('/mcp', (_req, res) => res.status(200).json({ ok: true }));
+      },
+      async baseUrl => {
+        const { lines } = await captureStderr(() =>
+          fetch(`${baseUrl}/mcp`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'User-Agent': 'probe-bot/1.0',
+            },
+            body: '{"jsonrpc": ',
+          }),
+        );
+        // Express's default error handler dumps the SyntaxError stack to
+        // stderr alongside our record, so unlike every other test here the
+        // captured stream is not all JSON. Keep only the log records.
+        const rec = parseAll(lines.filter(l => l.startsWith('{'))).find(
+          r => r.event === 'http_request',
+        );
+        assert.ok(
+          rec,
+          'a request rejected by the body parser must still be logged — this ' +
+            'is exactly the probing traffic the story needs attributed',
+        );
+        assert.equal(rec.status, 400);
+        assert.equal(rec.outcome, 'error');
+        assert.equal(rec.method, 'POST');
+        assert.equal(rec.path, '/mcp');
         assert.equal(rec.userAgent, 'probe-bot/1.0');
       },
     );
@@ -579,7 +641,7 @@ describe('structural: one helper replaces the duplicates (api)', () => {
     }
   });
 
-  test('the request-logging middleware is mounted after express.json() and strictly before the auth middleware, with nothing else in between', () => {
+  test('the request-logging middleware is mounted before express.json() and strictly before the auth middleware, with nothing else in between', () => {
     const contents = readFileSync(new URL('index.ts', srcDir), 'utf8');
     const jsonIdx = contents.indexOf('app.use(express.json())');
     const middlewareIdx = contents.indexOf('app.use(requestLogMiddleware)');
@@ -595,20 +657,23 @@ describe('structural: one helper replaces the duplicates (api)', () => {
       'expected the auth middleware referencing keyMatches in index.ts',
     );
     assert.ok(
-      jsonIdx < middlewareIdx,
-      'requestLogMiddleware must be mounted after express.json()',
+      middlewareIdx < jsonIdx,
+      'requestLogMiddleware must be mounted before express.json(), so that ' +
+        'body-parser rejections (400 malformed / 413 oversized) — which are ' +
+        'raised via next(err) and skip all later regular middleware — are ' +
+        'still logged',
     );
     assert.ok(
       middlewareIdx < authIdx,
       'requestLogMiddleware must be mounted before the auth middleware',
     );
 
-    const between = contents.slice(jsonIdx, middlewareIdx);
+    const between = contents.slice(middlewareIdx, jsonIdx);
     const appUseCount = (between.match(/app\.use\(/g) ?? []).length;
     assert.equal(
       appUseCount,
       1,
-      'no other app.use may be inserted between express.json() and requestLogMiddleware',
+      'no other app.use may be inserted between requestLogMiddleware and express.json()',
     );
   });
 

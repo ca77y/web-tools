@@ -18,8 +18,8 @@ const keyMatches = (provided: string | undefined, expected: string): boolean => 
 logEvent('startup_check', { searxngUrl: Config.searxng.url });
 
 const app = express();
-app.use(express.json());
 app.use(requestLogMiddleware);
+app.use(express.json());
 
 // ── Auth middleware (skips /health) ──────────────────────────────────
 
