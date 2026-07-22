@@ -101,13 +101,17 @@ Returns the full CrawlResult JSON including markdown, links, media, and JS execu
 
 Crawl one or more URLs and extract their content using Crawl4AI.
 
-| Parameter        | Type                | Description                    |
-| ---------------- | ------------------- | ------------------------------ |
-| `urls`           | string[] (required) | List of URLs to crawl          |
-| `browser_config` | object (optional)   | Crawl4AI browser configuration |
-| `crawler_config` | object (optional)   | Crawl4AI crawler configuration |
+| Parameter        | Type                | Description                                                      |
+| ---------------- | ------------------- | ---------------------------------------------------------------- |
+| `urls`           | string[] (required) | List of URLs to crawl                                            |
+| `browser_config` | object (optional)   | Crawl4AI browser configuration; merged over the stealth defaults |
+| `crawler_config` | object (optional)   | Crawl4AI crawler configuration                                   |
 
 Returns the extracted content from each URL.
+
+Both config objects may be written flat (`{"css_selector": "main"}`) or wrapped (`{"type": "CrawlerRunConfig", "params": {...}}`); Web Tools normalizes either into the one envelope Crawl4AI is sent. Your keys are merged with the defaults rather than replacing or silently dropping them.
+
+The pinned Crawl4AI image refuses a set of configuration fields from a network caller, including `proxy_config`, `cdp_url`, `cookies`, `headers` and `extra_args` on `browser_config`, and `session_id`, `magic`, `js_code`, `simulate_user` and `override_navigator` on `crawler_config`. Supplying one returns an error naming the field rather than a request Crawl4AI rejects. The full sets are in [`docs/ARCHITECTURE.md`](./docs/ARCHITECTURE.md).
 
 ### `web_snapshots`
 
@@ -224,7 +228,11 @@ web-tools fetch https://example.com
 web-tools screenshot https://example.com
 
 # Crawl multiple URLs
-web-tools crawl https://a.com https://b.com --magic
+web-tools crawl https://a.com https://b.com --selector main
+
+# Note: --magic maps to the Crawl4AI `magic` field, which the pinned
+# Crawl4AI image refuses from a network caller. The command now fails
+# fast with an error naming the field instead of appearing to succeed.
 
 # Wayback Machine
 web-tools snapshots https://example.com --from 20200101

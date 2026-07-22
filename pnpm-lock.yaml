@@ -55,6 +55,9 @@ importers:
         specifier: ^13.1.0
         version: 13.1.0
     devDependencies:
+      '@modelcontextprotocol/sdk':
+        specifier: ^1.12.1
+        version: 1.26.0(zod@3.25.76)
       tsx:
         specifier: ^4.19.2
         version: 4.21.0
