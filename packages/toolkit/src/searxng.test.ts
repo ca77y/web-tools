@@ -767,3 +767,28 @@ describe('searchSearXNG - context-free correlation', () => {
     assert.notEqual([...firstIds][0], [...secondIds][0]);
   });
 });
+
+describe('client timeout budget vs the SearXNG service config', () => {
+  /**
+   * Mirrors `outgoing.max_request_timeout: 20.0` in
+   * `services/searxng/settings.yml`, whose own `settings.test.mjs` asserts
+   * that value is unchanged. Both sides are pinned so this pairing cannot
+   * drift silently in either file.
+   */
+  const SEARXNG_MAX_REQUEST_TIMEOUT_SECONDS = 20;
+
+  test("the per-search client budget outlives SearXNG's slowest permitted engine", () => {
+    // SearXNG waits for its slowest engine before aggregating and returning
+    // partial results. If this client aborts first, results that healthy
+    // engines already produced are thrown away. Observed in production at
+    // the previous value of 15, which exactly matched the service's
+    // `outgoing.request_timeout: 15.0`: a `bing,duckduckgo` search returned
+    // nothing while `bing` alone returned ten results.
+    assert.ok(
+      Config.requestTimeout > SEARXNG_MAX_REQUEST_TIMEOUT_SECONDS,
+      `Config.requestTimeout (${Config.requestTimeout}s) must exceed SearXNG's ` +
+        `max_request_timeout (${SEARXNG_MAX_REQUEST_TIMEOUT_SECONDS}s), or a single ` +
+        'slow engine aborts the whole search client-side',
+    );
+  });
+});

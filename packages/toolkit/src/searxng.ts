@@ -505,7 +505,7 @@ export async function searchSearXNG(
 /**
  * Cheap SearXNG reachability probe for `GET /ready`. Issues a single GET
  * to `${Config.searxng.url}/healthz`, bounded by an explicit timeout —
- * never `Config.requestTimeout`, which is a 15s per-search budget. This is
+ * never `Config.requestTimeout`, which is a 30s per-search budget. This is
  * a reachability check, not a feature probe, so it never runs a real
  * query.
  *

@@ -3,7 +3,7 @@ import { probeSearXNG } from './searxng.js';
 
 /**
  * Explicit, short per-probe timeout for readiness checks. Deliberately NOT
- * `Config.requestTimeout` (a 15s per-search budget): a health probe must
+ * `Config.requestTimeout` (a 30s per-search budget): a health probe must
  * answer far faster than a user query, so `GET /ready` never becomes the
  * slowest thing in the stack.
  */

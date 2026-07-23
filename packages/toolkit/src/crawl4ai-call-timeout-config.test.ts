@@ -55,9 +55,9 @@ test('Config.crawl4ai.callTimeoutMs is grouped with the existing crawl4ai.url/ap
   );
   assert.ok('url' in Config.crawl4ai);
   assert.ok('apiToken' in Config.crawl4ai);
-  // requestTimeout is SearXNG-specific (15 seconds, not milliseconds) and
+  // requestTimeout is SearXNG-specific (30 seconds, not milliseconds) and
   // must remain untouched and unrelated: reusing it for Crawl4AI would be
   // exactly the defect the spec calls out for the acceptance gate to reject.
-  assert.equal(Config.requestTimeout, 15);
+  assert.equal(Config.requestTimeout, 30);
   assert.notEqual(Config.crawl4ai.callTimeoutMs, Config.requestTimeout);
 });

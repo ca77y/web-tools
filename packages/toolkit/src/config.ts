@@ -36,5 +36,16 @@ export const Config = {
         }
       : null,
   parallelRequests: 3,
-  requestTimeout: 15,
+  /**
+   * Per-search client budget, in seconds, for a SearXNG request.
+   *
+   * Must stay strictly above SearXNG's own `outgoing.max_request_timeout:
+   * 20.0` (`services/searxng/settings.yml`). At the previous value of 15 it
+   * exactly matched that file's `outgoing.request_timeout: 15.0`, leaving
+   * zero headroom: SearXNG waits for its slowest engine before aggregating,
+   * so any engine set containing one slow engine aborted here first. That
+   * discarded the results healthy engines had already returned — a
+   * `bing,duckduckgo` search yielded nothing while `bing` alone succeeded.
+   */
+  requestTimeout: 30,
 } as const;
