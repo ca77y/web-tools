@@ -1,7 +1,7 @@
 use_default_settings:
   engines:
     keep_only:
-      - google
+      - google cse
       - brave
       - duckduckgo
       - bing
@@ -35,36 +35,25 @@ search:
     # usually will not fix a per-ASN/fingerprint 403 — so re-test soonest for
     # CAPTCHA, latest for AccessDenied.
 
-    # CAPTCHA is the most rotation-recoverable class (a clean exit IP clears a
-    # Google /sorry/ block). Corrected against the built image: google_sorry_fix.py's
-    # build-time patch DOES add an explicit `SearxEngineCaptchaException(suspended_time=0)`
-    # raise on its own 302/short-body-"/sorry/" check — but that line is
-    # shadowed, unreachable dead code in the current base image. response()
-    # calls the upstream detect_google_sorry(resp) FIRST, and that function's
-    # own trigger conditions (HTTP 302, OR a short body containing "/sorry/")
-    # are a strict superset of the patch's condition, so detect_google_sorry
-    # always raises its own BARE SearxEngineCaptchaException() (no
-    # suspended_time argument) before the patch's line can ever execute. Per
-    # searx/exceptions.py (`if suspended_time is None: suspended_time =
-    # self._get_default_suspended_time()`), that bare raise takes THIS config
-    # value, so every observed Google /sorry/ path suspends for 60s in
-    # practice — the patch's `suspended_time=0` is real code but never runs.
-    # (DuckDuckGo's two CAPTCHA raises in duckduckgo.py ARE explicit and
-    # reachable `suspended_time=0`, and stay immune to this value.)
+    # CAPTCHA is the most rotation-recoverable class: a clean exit IP clears a
+    # challenge page, so this class is re-tested soonest. DuckDuckGo, Qwant and
+    # Mojeek all reach it through our egress.
     #
-    # 60s is still fine for the rotation strategy: outgoing.retries: 3 rotates
-    # exit IPs entirely WITHIN one search's outgoing HTTP request/retry loop
-    # (searx/network/network.py: Network.call_client), which runs and exhausts
-    # its 4 attempts BEFORE engine.response() ever runs and raises this
-    # exception — suspension is only consulted at the NEXT search's dispatch.
-    # So a 60s Google suspension never shortens or interrupts the current
-    # search's own rotation (the ~99% case, per the outgoing: block's own
-    # estimate, already lands a clean IP within those 4 attempts). It only
-    # means: on the ~1% tail where all 4 attempts still hit /sorry/, any other
-    # search dispatched in the next 60s skips re-gambling on Google rather
-    # than repeating the same losing rotation — a real circuit breaker, still
-    # well inside "an operator's patience" (order of minutes, not upstream's
-    # 24h default).
+    # 60s is a circuit breaker, not a brake on rotation. The engines that
+    # actually recover by rotating raise this class with an EXPLICIT
+    # `suspended_time=0` (duckduckgo.py does so twice), and an explicit value
+    # always wins over this config default — so the engines that benefit most
+    # from an immediate retry are unaffected by the number here. This value
+    # applies only to a BARE raise, where it bounds the tail: after four failed
+    # attempts, any search dispatched in the next 60s skips re-gambling on that
+    # engine instead of repeating the same losing rotation. Upstream's default
+    # is 86400 (24h), which would drop the engine for a whole day.
+    #
+    # Suspension never interrupts the in-search rotation: outgoing.retries: 3
+    # rotates exit IPs entirely WITHIN one search's outgoing HTTP request/retry
+    # loop (searx/network/network.py: Network.call_client), which runs and
+    # exhausts its 4 attempts BEFORE engine.response() ever raises this
+    # exception — suspension is consulted only at the NEXT search's dispatch.
     SearxEngineCaptcha: 60
     # 429 / "too many requests" (brave, wikipedia) is largely volume-driven and
     # decays with time; 2 min lets the rate window drain and re-tests quickly
@@ -73,7 +62,10 @@ search:
     # 403 / access-denied (mojeek, qwant on first contact) points at per-ASN /
     # fingerprint reputation that a fresh exit IP will NOT fix; suspend longest
     # so we stop hammering, but only 5 min (not upstream's 86400 = 24h) because
-    # our rotating residential pool's standing can change and is worth re-testing.
+    # the standing of whatever egress we run on can change and is worth
+    # re-testing. Measured 2026-07-23: mojeek and qwant both answer 6/6 from a
+    # clean residential IP and fail every time from the unproxied production
+    # egress, so this class is an egress verdict, not an engine verdict.
     SearxEngineAccessDenied: 300
     # Cloudflare / reCAPTCHA challenges are per-fingerprint/session, not exit-IP
     # rotation-recoverable, so treat them like durable access-denied. None of the
@@ -97,14 +89,19 @@ outgoing:
   request_timeout: 15.0
   max_request_timeout: 20.0
   enable_http2: false
-  # Google /sorry/-blocks a fraction of the rotating residential exit IPs.
-  # Whichever of google.py's detect_google_sorry / google_sorry_fix.py's patch
-  # actually raises the captcha exception (see search.suspended_times.SearxEngineCaptcha
-  # above — currently 60, not 0), each retry within a search still rotates to
-  # a fresh IP via the proxy below. With the US-geo pool ~2/3 of IPs are
-  # clean, so 4 attempts (retries: 3) ≈ 99% hit a working IP. Do NOT set
-  # source_ips here — binding the local socket while proxying is pointless
-  # (the exit IP is the proxy's) and degrades requests.
+  # Providers block a fraction of any shared exit-IP pool. Each retry within a
+  # search rotates to a fresh IP via the proxy below, so a blocked first
+  # attempt usually recovers inside the same search. With a US-geo residential
+  # pool ~2/3 of IPs are clean, so 4 attempts (retries: 3) ≈ 99% hit a working
+  # one. Do NOT set source_ips here — binding the local socket while proxying
+  # is pointless (the exit IP is the proxy's) and degrades requests.
+  #
+  # NOTE: PROXY_URL is UNSET in production today — the SearXNG service logs
+  # "Proxy: disabled" at boot, so this entire proxy block is stripped by the
+  # entrypoint and every request egresses from the Railway datacenter IP
+  # directly. That is the dominant cause of engine blocking, and none of the
+  # rotation reasoning above applies until a proxy is configured. See
+  # ../../docs/tasks/searxng-configure-egress-proxy.md.
   retries: 3
   pool_connections: 20
   # Keep-alive ON (pool_maxsize>0). Tested pool_maxsize:0 to force per-retry IP
@@ -125,16 +122,25 @@ outgoing:
       - ${PROXY_URL}
 
 engines:
-  - name: google
-    engine: google
-    shortcut: g
-    use_mobile_ui: false
+  # Replaces the plain `google` engine, which was removed on 2026-07-23.
+  # Upstream ships `google` as `inactive: true` because its HTML endpoint is
+  # now JS-gated: every request returns HTTP 200 carrying Google's "enablejs"
+  # interstitial instead of results. Measured against the built image with the
+  # engine's own request, plus the udm=14, gbv=1, num=20 and minimal-parameter
+  # variants — all five return the interstitial. The XPath selectors match
+  # nothing and nothing raises, so the engine reported a SUCCESSFUL search with
+  # zero results on every query. That is the exact failure mode
+  # packages/CLAUDE.md forbids, and no egress change fixes it.
+  #
+  # `google cse` queries the same index through Google's Programmable Search
+  # endpoint and returns ~20 results per query. Caveat: upstream hard-codes a
+  # THIRD-PARTY search-engine id (CX `partner-pub-8993703457585266`, belonging
+  # to blackle.com) in searx/engines/google_cse.py. The quota is not ours and
+  # can be revoked without notice, so treat this engine as best-effort.
+  - name: google cse
+    engine: google_cse
+    shortcut: goc
     disabled: false
-    # Upstream's default settings mark this engine `inactive: True`; without
-    # this override it stays excluded after the use_default_settings.keep_only
-    # merge even though it's in keep_only and listed here (confirmed against
-    # the built image: GET /config silently dropped google until this was added).
-    inactive: false
 
   - name: brave
     engine: brave

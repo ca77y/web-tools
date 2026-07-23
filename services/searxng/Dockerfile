@@ -2,12 +2,18 @@ FROM searxng/searxng:latest
 
 COPY settings.yml /etc/searxng/settings.yml.tpl
 
-ADD google_sorry_fix.py /tmp/google_sorry_fix.py
-RUN GOOGLE_PY=/usr/local/searxng/searx/engines/google.py && \
-    python3 /tmp/google_sorry_fix.py "$GOOGLE_PY" && \
-    rm /tmp/google_sorry_fix.py && \
-    find /usr/local/searxng/searx -name "__pycache__" -type d -exec rm -rf {} + && \
-    python3 -m compileall -q -f -j 0 --invalidation-mode=unchecked-hash /usr/local/searxng/searx/
+# No source patching. `google_sorry_fix.py` used to be applied here, monkey-
+# patching searx/engines/google.py at build time; it was removed on 2026-07-23
+# along with the `google` engine it existed to prop up. Google's HTML endpoint
+# is now JS-gated (every response is the "enablejs" interstitial), so no
+# amount of /sorry/ detection or fallback parsing recovers a result — see the
+# `google cse` comment in settings.yml. The patch also carried LinkedIn
+# profile-location enrichment belonging to an unrelated problem domain, and
+# injected itself by string-replacing the file's last `return results`.
+#
+# Keeping the base image unpatched is what lets this Dockerfile stay a plain
+# COPY: nothing under /usr/local/searxng is modified, so the bytecode-recompile
+# step that used to follow the patch is unnecessary.
 
 ENTRYPOINT ["sh", "-c", "\
 if [ -n \"$PROXY_URL\" ]; then \

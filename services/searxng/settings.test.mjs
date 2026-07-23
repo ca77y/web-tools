@@ -13,7 +13,7 @@
  * Test-execution boundary and are not covered here.
  */
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -23,7 +23,7 @@ const settingsPath = join(__dirname, 'settings.yml');
 const text = readFileSync(settingsPath, 'utf8');
 
 const EXPECTED_KEEP_ONLY = [
-  'google',
+  'google cse',
   'brave',
   'duckduckgo',
   'bing',
@@ -32,7 +32,18 @@ const EXPECTED_KEEP_ONLY = [
   'wikipedia',
 ];
 
-const FORBIDDEN_ENGINES = ['wikidata', 'google cse', 'google_cse', 'startpage'];
+/**
+ * `google` is forbidden, not merely absent. Upstream ships it `inactive: true`
+ * because its HTML endpoint is JS-gated: every response is Google's "enablejs"
+ * interstitial, the XPath selectors match nothing, and *nothing raises* — so
+ * the engine reports a successful search with zero results on every query.
+ * Re-adding it silently degrades search rather than failing loudly.
+ *
+ * `google cse` was on this list while it was an unintended engine loaded by the
+ * old scalar `use_default_settings: true`; it is now a deliberate choice and so
+ * moved to EXPECTED_KEEP_ONLY.
+ */
+const FORBIDDEN_ENGINES = ['wikidata', 'startpage', 'google'];
 
 const SUSPENDED_TIMES_KEYS = [
   'SearxEngineCaptcha',
@@ -154,8 +165,11 @@ describe('services/searxng/settings.yml — engine allowlist', () => {
     const keepOnly = new Set(
       parseYamlList(sections.use_default_settings.text, 'keep_only:'),
     );
+    // `(\S.*?)` rather than `(\S+)`: engine names may contain spaces
+    // ("google cse"), and a `\S+` capture silently fails to match those lines
+    // entirely, dropping them from the check instead of testing them.
     const localNames = [
-      ...sections.engines.text.matchAll(/^\s*-\s*name:\s*(\S+)\s*$/gm),
+      ...sections.engines.text.matchAll(/^\s*-\s*name:\s*(\S.*?)\s*$/gm),
     ].map((m) => m[1]);
     assert.ok(localNames.length > 0, 'no local engine names found');
     for (const name of localNames) {
@@ -166,7 +180,7 @@ describe('services/searxng/settings.yml — engine allowlist', () => {
     }
   });
 
-  test('unintended engines (wikidata, google cse, startpage) are absent from keep_only', () => {
+  test('forbidden engines (wikidata, startpage, google) are absent from keep_only', () => {
     const keepOnly = parseYamlList(sections.use_default_settings.text, 'keep_only:');
     for (const forbidden of FORBIDDEN_ENGINES) {
       assert.ok(
@@ -176,22 +190,46 @@ describe('services/searxng/settings.yml — engine allowlist', () => {
     }
   });
 
-  test('google is explicitly reactivated (upstream default_settings marks it inactive: True)', () => {
-    // Without this override google's merged config still carries upstream's
-    // `inactive: True` after the use_default_settings.keep_only merge, so
-    // SearXNG silently excludes it from GET /config despite it being in
-    // keep_only and in this local engines: list. Confirmed against the built
-    // image (QA, round 1): GET /config returned only 6 of the 7 engines,
-    // missing google, until this override was added.
-    const googleEntryMatch = /-\s*name:\s*google\b[\s\S]*?(?=\n\s*- name:|\n*$)/.exec(
+  test('the JS-gated google engine is not declared anywhere in engines:', () => {
+    // Guards the removal, not just the allowlist: a `- name: google` entry
+    // would be a no-op today (it is not in keep_only) but would come back to
+    // life the moment anyone re-added it there.
+    const localNames = [
+      ...sections.engines.text.matchAll(/^\s*-\s*name:\s*(\S.*?)\s*$/gm),
+    ].map((m) => m[1]);
+    assert.ok(
+      !localNames.includes('google'),
+      'engines: must not declare the plain "google" engine — it returns Google\'s ' +
+        '"enablejs" interstitial with HTTP 200, yielding zero results and raising nothing',
+    );
+  });
+
+  test('google cse needs no inactive override, unlike the google engine it replaced', () => {
+    // `google` required an explicit `inactive: false` because upstream marks it
+    // inactive. `google cse` is active in upstream's defaults, so an override
+    // here would be cargo-culted noise — and would mask a future upstream
+    // deactivation exactly like the one that made `google` fail silently.
+    const entry = /-\s*name:\s*google cse\b[\s\S]*?(?=\n\s*- name:|\n*$)/.exec(
       sections.engines.text,
     );
-    assert.ok(googleEntryMatch, 'no "- name: google" entry found in engines:');
-    assert.match(
-      googleEntryMatch[0],
-      /^\s*inactive:\s*false\s*$/m,
-      'google\'s engines: entry must set inactive: false',
+    assert.ok(entry, 'no "- name: google cse" entry found in engines:');
+    assert.ok(
+      !/^\s*inactive:\s*/m.test(entry[0]),
+      'google cse must not carry an inactive: override',
     );
+    assert.match(entry[0], /^\s*engine:\s*google_cse\s*$/m);
+  });
+
+  test('the third-party CX that google cse depends on is documented as a risk', () => {
+    // Upstream hard-codes someone else's Programmable Search id in
+    // searx/engines/google_cse.py. That is a real availability dependency and
+    // must not be adopted silently.
+    const entryRegion = sections.engines.text.slice(
+      0,
+      sections.engines.text.indexOf('- name: google cse'),
+    );
+    assert.match(entryRegion, /partner-pub-8993703457585266/);
+    assert.match(entryRegion, /third-party/i);
   });
 });
 
@@ -282,6 +320,15 @@ describe('services/searxng/settings.yml — proxy entrypoint preservation', () =
     assert.ok(!searchBlock.includes('PROXY_URL}'));
   });
 
+  test('the entrypoint still branches on PROXY_URL and reports which branch it took', () => {
+    // The boot line is the only way to tell from outside the container whether
+    // production is proxied. It is what showed PROXY_URL to be unset in
+    // production on 2026-07-23, with every engine but bing and brave blocked.
+    const dockerfile = readFileSync(join(__dirname, 'Dockerfile'), 'utf8');
+    assert.match(dockerfile, /Proxy: enabled/);
+    assert.match(dockerfile, /Proxy: disabled/);
+  });
+
   test('the outgoing: block retries, request_timeout, pool_*, and verify settings are unchanged', () => {
     const outgoingBlock = sections.outgoing.text;
     assert.match(outgoingBlock, /^\s*retries:\s*3\s*$/m);
@@ -290,5 +337,39 @@ describe('services/searxng/settings.yml — proxy entrypoint preservation', () =
     assert.match(outgoingBlock, /^\s*pool_connections:\s*20\s*$/m);
     assert.match(outgoingBlock, /^\s*pool_maxsize:\s*20\s*$/m);
     assert.match(outgoingBlock, /^\s*verify:\s*false\s*$/m);
+  });
+});
+
+describe('services/searxng/Dockerfile — no build-time source patching', () => {
+  const dockerfile = readFileSync(join(__dirname, 'Dockerfile'), 'utf8');
+
+  test('google_sorry_fix.py is gone from the tree', () => {
+    assert.ok(
+      !existsSync(join(__dirname, 'google_sorry_fix.py')),
+      'google_sorry_fix.py patched an engine we no longer run and must stay deleted',
+    );
+  });
+
+  test('the image does not patch or recompile the upstream searx sources', () => {
+    // The patch injected itself by string-replacing google.py's *last*
+    // `return results`, which is why it also needed a bytecode recompile. Both
+    // are gone; reintroducing either means the base image is being modified
+    // again and this test should be revisited deliberately, not silently.
+    //
+    // Comments are stripped first: the Dockerfile deliberately *names*
+    // google_sorry_fix.py to record why it was removed, and that prose must not
+    // read as the instruction it is warning about.
+    const instructions = dockerfile
+      .split('\n')
+      .filter((line) => !line.trim().startsWith('#'))
+      .join('\n');
+    assert.ok(
+      !instructions.includes('google_sorry_fix'),
+      'Dockerfile must not apply google_sorry_fix.py',
+    );
+    assert.ok(
+      !instructions.includes('compileall'),
+      'a compileall step implies the searx sources were modified at build time',
+    );
   });
 });
