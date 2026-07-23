@@ -5,7 +5,7 @@ title: Restrict the SearXNG engine set and bound engine failure suspension
 
 # Restrict the SearXNG engine set and bound engine failure suspension
 
-- [<] Restrict the SearXNG engine set and bound engine failure suspension #bug ⏫ 🆔 searxng-engine-set-and-suspension-policy
+- [x] Restrict the SearXNG engine set and bound engine failure suspension #bug ⏫ 🆔 searxng-engine-set-and-suspension-policy
   - Phase: Phase 1 - Reliable Core
   - **Problem.** Our SearXNG instance runs engines we never configured, and retries permanently-blocked engines forever. Together these generate hundreds of avoidable upstream failures per hour and amplify the traffic that gets our egress blocked.
   - **Evidence — unintended engines are active.** [`services/searxng/settings.yml`](../../services/searxng/settings.yml) sets `use_default_settings: true` (line 1) and then lists exactly seven engines under `engines:` (lines 55-93): `google`, `brave`, `duckduckgo`, `bing`, `qwant`, `mojeek`, `wikipedia`. Production logs from 2026-07-18 show three engines that appear nowhere in that list producing failures: `wikidata`, `google cse`, and `startpage`.
