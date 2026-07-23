@@ -373,7 +373,7 @@ This starts Redis, SearXNG, and Crawl4AI.
 
 **First run only:** the SearXNG and Crawl4AI images build locally instead of pulling, so it takes noticeably longer than a pull — this is expected, not a hang.
 
-The Crawl4AI image is amd64-only (its Playwright browser-binary check only resolves on amd64). `docker-compose.yml` pins the `crawl4ai` service to `platform: linux/amd64`, so Compose builds and runs it under emulation automatically on Apple Silicon or other arm64 hosts — no extra configuration needed, though emulated builds and requests run slower than native.
+Both images build and run natively on arm64 (Apple Silicon) as well as amd64 — `unclecode/crawl4ai:0.9.1` publishes both manifests, and `services/crawl4ai/Dockerfile`'s build guard accepts either architecture's Playwright headless-shell layout. No emulation, no extra configuration.
 
 Then run the server:
 
