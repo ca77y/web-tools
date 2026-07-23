@@ -1,10 +1,12 @@
 services:
   redis:
+    restart: unless-stopped
     image: redis:7-alpine
     ports:
       - "6379:6379"
 
   searxng:
+    restart: unless-stopped
     build: ./services/searxng
     ports:
       - "8080:8080"
@@ -16,6 +18,7 @@ services:
       - redis
 
   crawl4ai:
+    restart: unless-stopped
     build: ./services/crawl4ai
     ports:
       - "11235:11235"
@@ -23,6 +26,7 @@ services:
       - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-}
 
   web_tools:
+    restart: unless-stopped
     build:
       context: .
       dockerfile: Dockerfile
