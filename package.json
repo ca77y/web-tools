@@ -9,7 +9,8 @@
     "serve": "pnpm --filter @web-tools/api run serve",
     "clean": "pnpm -r run clean",
     "typecheck": "pnpm -r run typecheck",
-    "test": "pnpm --filter @web-tools/toolkit run test && pnpm --filter @web-tools/api run test && pnpm --filter @web-tools/cli run test",
+    "test": "pnpm --filter @web-tools/toolkit run test && pnpm --filter @web-tools/api run test && pnpm --filter @web-tools/cli run test && pnpm run test:searxng",
+    "test:searxng": "node --test services/searxng/settings.test.mjs",
     "format": "prettier --write \"packages/*/src/**/*.{ts,tsx}\""
   },
   "engines": {

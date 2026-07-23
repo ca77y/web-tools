@@ -1,4 +1,13 @@
-use_default_settings: true
+use_default_settings:
+  engines:
+    keep_only:
+      - google
+      - brave
+      - duckduckgo
+      - bing
+      - qwant
+      - mojeek
+      - wikipedia
 
 server:
   secret_key: "${SEARXNG_SECRET_KEY:-default_secret_key}"
@@ -12,27 +21,90 @@ search:
     - json
   safe_search: 0
   default_lang: en
-  # Never suspend engines — retry immediately (useful with rotating proxies)
   suspended_times:
-    SearxEngineAccessDenied: 0
-    SearxEngineCaptcha: 0
-    SearxEngineTooManyRequests: 0
-    cf_SearxEngineCaptcha: 0
-    cf_SearxEngineAccessDenied: 0
-    recaptcha_SearxEngineCaptcha: 0
-  ban_time_on_fail: 0
-  max_ban_time_on_fail: 0
+    # Class-keyed DEFAULT suspend durations (seconds). SearXNG applies these
+    # per-engine-network (see searx/search/processors/abstract.py:
+    # SUSPENDED_STATUS is keyed by the engine's network, not by exception
+    # class), and only when an engine raises the class WITHOUT an explicit
+    # suspended_time. Suspension is checked at search dispatch and skips the
+    # engine on SUBSEQUENT searches; it never interrupts the in-search
+    # outgoing.retries rotation, which lives at the network layer.
+    #
+    # Ordering reflects how exit-IP-rotation-recoverable each class is:
+    # a fresh rotating exit IP fixes a CAPTCHA, may not fix a rate-limit, and
+    # usually will not fix a per-ASN/fingerprint 403 — so re-test soonest for
+    # CAPTCHA, latest for AccessDenied.
+
+    # CAPTCHA is the most rotation-recoverable class (a clean exit IP clears a
+    # Google /sorry/ block). Corrected against the built image: google_sorry_fix.py's
+    # build-time patch DOES add an explicit `SearxEngineCaptchaException(suspended_time=0)`
+    # raise on its own 302/short-body-"/sorry/" check — but that line is
+    # shadowed, unreachable dead code in the current base image. response()
+    # calls the upstream detect_google_sorry(resp) FIRST, and that function's
+    # own trigger conditions (HTTP 302, OR a short body containing "/sorry/")
+    # are a strict superset of the patch's condition, so detect_google_sorry
+    # always raises its own BARE SearxEngineCaptchaException() (no
+    # suspended_time argument) before the patch's line can ever execute. Per
+    # searx/exceptions.py (`if suspended_time is None: suspended_time =
+    # self._get_default_suspended_time()`), that bare raise takes THIS config
+    # value, so every observed Google /sorry/ path suspends for 60s in
+    # practice — the patch's `suspended_time=0` is real code but never runs.
+    # (DuckDuckGo's two CAPTCHA raises in duckduckgo.py ARE explicit and
+    # reachable `suspended_time=0`, and stay immune to this value.)
+    #
+    # 60s is still fine for the rotation strategy: outgoing.retries: 3 rotates
+    # exit IPs entirely WITHIN one search's outgoing HTTP request/retry loop
+    # (searx/network/network.py: Network.call_client), which runs and exhausts
+    # its 4 attempts BEFORE engine.response() ever runs and raises this
+    # exception — suspension is only consulted at the NEXT search's dispatch.
+    # So a 60s Google suspension never shortens or interrupts the current
+    # search's own rotation (the ~99% case, per the outgoing: block's own
+    # estimate, already lands a clean IP within those 4 attempts). It only
+    # means: on the ~1% tail where all 4 attempts still hit /sorry/, any other
+    # search dispatched in the next 60s skips re-gambling on Google rather
+    # than repeating the same losing rotation — a real circuit breaker, still
+    # well inside "an operator's patience" (order of minutes, not upstream's
+    # 24h default).
+    SearxEngineCaptcha: 60
+    # 429 / "too many requests" (brave, wikipedia) is largely volume-driven and
+    # decays with time; 2 min lets the rate window drain and re-tests quickly
+    # because these are core engines. Upstream default is 3600 (1h).
+    SearxEngineTooManyRequests: 120
+    # 403 / access-denied (mojeek, qwant on first contact) points at per-ASN /
+    # fingerprint reputation that a fresh exit IP will NOT fix; suspend longest
+    # so we stop hammering, but only 5 min (not upstream's 86400 = 24h) because
+    # our rotating residential pool's standing can change and is worth re-testing.
+    SearxEngineAccessDenied: 300
+    # Cloudflare / reCAPTCHA challenges are per-fingerprint/session, not exit-IP
+    # rotation-recoverable, so treat them like durable access-denied. None of the
+    # seven allowlisted engines raise these today; bounding them prevents ever
+    # inheriting upstream's 15-day / 7-day / 1-day defaults if one starts to.
+    cf_SearxEngineCaptcha: 300
+    cf_SearxEngineAccessDenied: 300
+    recaptcha_SearxEngineCaptcha: 300
+  # Generic per-fail ban for failures with no class-specific suspended_time
+  # (timeouts, connection resets, non-access-denied errors). SearXNG grows
+  # this ban with consecutive failures — min(ban_time_on_fail * n_errors,
+  # max_ban_time_on_fail) — so 5s is only the FIRST-failure cooldown (a
+  # minimal pause before re-querying a timing-out engine, e.g. duckduckgo:
+  # 117 timeouts in the sample, on the immediately following search), and
+  # 120s is the real ceiling a repeatedly-failing engine grows into. The
+  # timeout storm itself is owned by search-client-fanout-and-timeout-budget.
+  ban_time_on_fail: 5
+  max_ban_time_on_fail: 120
 
 outgoing:
   request_timeout: 15.0
   max_request_timeout: 20.0
   enable_http2: false
   # Google /sorry/-blocks a fraction of the rotating residential exit IPs.
-  # google_sorry_fix.py turns a 302/sorry into an immediate-retry captcha
-  # (suspended_times: 0 below), so each retry rotates to a fresh IP. With the
-  # US-geo pool ~2/3 of IPs are clean, so 4 attempts (retries: 3) ≈ 99% hit a
-  # working IP. Do NOT set source_ips here — binding the local socket while
-  # proxying is pointless (the exit IP is the proxy's) and degrades requests.
+  # Whichever of google.py's detect_google_sorry / google_sorry_fix.py's patch
+  # actually raises the captcha exception (see search.suspended_times.SearxEngineCaptcha
+  # above — currently 60, not 0), each retry within a search still rotates to
+  # a fresh IP via the proxy below. With the US-geo pool ~2/3 of IPs are
+  # clean, so 4 attempts (retries: 3) ≈ 99% hit a working IP. Do NOT set
+  # source_ips here — binding the local socket while proxying is pointless
+  # (the exit IP is the proxy's) and degrades requests.
   retries: 3
   pool_connections: 20
   # Keep-alive ON (pool_maxsize>0). Tested pool_maxsize:0 to force per-retry IP
@@ -58,6 +130,11 @@ engines:
     shortcut: g
     use_mobile_ui: false
     disabled: false
+    # Upstream's default settings mark this engine `inactive: True`; without
+    # this override it stays excluded after the use_default_settings.keep_only
+    # merge even though it's in keep_only and listed here (confirmed against
+    # the built image: GET /config silently dropped google until this was added).
+    inactive: false
 
   - name: brave
     engine: brave

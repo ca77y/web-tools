@@ -88,7 +88,40 @@ The published schemas describe only what the image honors: `WebFetchInput` no lo
 
 ### SearXNG
 
-SearXNG owns metasearch aggregation. Web Tools normalizes useful search fields and distinguishes valid no-result responses from upstream failure; the mechanism is documented under [Search Failure Classification](#search-failure-classification).
+SearXNG owns metasearch aggregation. Web Tools normalizes useful search fields and distinguishes valid no-result responses from upstream failure; the classification mechanism is documented under [Search Failure Classification](#search-failure-classification). The SearXNG image is built from `services/searxng/` (see [Service Image Provenance](#service-image-provenance)); its `settings.yml` fixes two operational policies that shape outbound provider load — the active engine set and the engine-failure suspension policy. Both are chosen to reduce the outbound-request amplification that contributes to egress blocking, an unresolved upstream constraint tracked in [`issues/searxng-egress-proxy-reputation.md`](./issues/searxng-egress-proxy-reputation.md). Neither policy claims to fix egress reputation; both reduce avoidable load.
+
+#### Engine allowlist
+
+`use_default_settings` is written in **mapping form** with `engines.keep_only` restricting the active set to exactly seven engines: `google`, `brave`, `duckduckgo`, `bing`, `qwant`, `mojeek`, and `wikipedia`.
+
+The mapping form is load-bearing. The prior scalar `use_default_settings: true` does **not** restrict the engine set — per the [upstream docs](https://docs.searxng.org/admin/settings/settings.html#use-default-settings), a local `engines:` list under scalar `true` is merged as per-engine *overrides* on top of the full upstream default engine set, so SearXNG silently loaded every default engine, including `wikidata`, `google cse`, and `startpage`. Those three unintended engines were the single largest source of observed upstream failures — 290 of 705 non-timeout failures (41%) in the production sample. `keep_only` is the documented mechanism that makes the seven-name list an allowlist. The two forms are alternatives, not additive, so the scalar was removed.
+
+The local `engines:` list is retained and continues to merge per-engine overrides (`shortcut`, `use_mobile_ui`, `disabled`) by name. One override is non-obvious: `google` carries an explicit `inactive: false` because the upstream base image ships `google` marked `inactive` by default. Without the override it stays excluded after the `keep_only` merge even though it is allowlisted and listed locally — confirmed against the built image, where `GET /config` silently dropped `google` until the override was added. The other six engines need no such override.
+
+`mojeek` and `qwant` are deliberately kept in the allowlist despite high observed failure rates (403 / access-denied, 94 and 93 times respectively in the sample). Their blocking is believed to be egress-reputation-driven rather than configuration-driven — a well-evidenced but unconfirmed hypothesis documented in [`issues/searxng-egress-proxy-reputation.md`](./issues/searxng-egress-proxy-reputation.md). The deliberate policy is therefore "keep and suspend on failure" rather than silently dropping engines on an unproven diagnosis; the suspension policy below is what bounds their retry cost.
+
+#### Engine-failure suspension policy
+
+`search.suspended_times` plus `ban_time_on_fail` / `max_ban_time_on_fail` replace a prior blanket-zero block that never suspended any engine, so a permanently blocked engine (Wikidata 403, Mojeek 403) was re-attempted on every search forever. The replacement values are bounded and differentiated by failure class, ordered by how recoverable each class is through the residential proxy's exit-IP rotation:
+
+| Class / key | Value (s) | Rationale |
+|---|---:|---|
+| `SearxEngineCaptcha` | 60 | Most rotation-recoverable — a clean exit IP clears a Google `/sorry/` block; a minimal circuit breaker for the residual tail. Upstream default 86400. |
+| `SearxEngineTooManyRequests` | 120 | 429 / rate-limit is largely volume-driven and decays with time; kept short so these core engines re-test quickly. Upstream default 3600. |
+| `SearxEngineAccessDenied` | 300 | 403 points at per-ASN / fingerprint reputation a fresh exit IP will not fix; suspend longest to stop hammering, but only 5 min because the rotating pool's standing can change. Upstream default 86400. |
+| `cf_SearxEngineCaptcha` | 300 | Cloudflare / reCAPTCHA challenges are per-fingerprint/session, not rotation-recoverable; treated like durable access-denied. None of the seven allowlisted engines raise these today — bounding them pre-empts inheriting upstream's 15-day / 7-day / 1-day defaults if one starts to. |
+| `cf_SearxEngineAccessDenied` | 300 | As above. |
+| `recaptcha_SearxEngineCaptcha` | 300 | As above. |
+| `ban_time_on_fail` | 5 | Generic first-failure cooldown for class-less failures (timeouts, connection resets), e.g. DuckDuckGo's 117 sample timeouts. |
+| `max_ban_time_on_fail` | 120 | Ceiling the generic ban grows into over consecutive failures — SearXNG uses `min(ban_time_on_fail * n_errors, max_ban_time_on_fail)`, so 5 s is only the first-failure pause. |
+
+The ordering `SearxEngineCaptcha (60) < SearxEngineTooManyRequests (120) < SearxEngineAccessDenied (300)` is the policy's core: re-test soonest for the class a rotating exit IP most likely fixes, latest for durable per-ASN/fingerprint blocks. Every value is bounded well under the upstream 24-hour-and-longer defaults, so a transient block never removes an engine for a day, and every value carries an in-file comment stating its rationale.
+
+Two mechanism facts make this policy safe, and both are non-obvious enough to record:
+
+- **Suspension never interrupts in-search retry rotation.** `suspended_times.<Class>` is a *class-keyed default duration* consulted only when an engine raises that class with no explicit `suspended_time`; suspension state is stored per engine-network and checked only at the *next* search's dispatch. The `outgoing.retries: 3` exit-IP rotation loop is a network-layer concern (`searx/network/network.py`) that runs and exhausts its four attempts within a single search, before `engine.response()` raises any suspension exception. The two never interact inside one search, so no suspension value can shorten or lengthen the rotation the `google_sorry_fix.py` design depends on.
+
+- **The Google `/sorry/` path resolves to the 60 s config value via a bare exception, and `google_sorry_fix.py`'s own explicit `suspended_time=0` raise is unreachable dead code in the current base image.** This is worth stating precisely because it is counter-intuitive and was the subject of repeated correction. The patch does add an explicit `SearxEngineCaptchaException(suspended_time=0)` raise on its own 302 / short-body-`/sorry/` check, but `response()` calls the upstream `detect_google_sorry(resp)` first, and that function's trigger conditions (HTTP 302, or a short body containing `/sorry/`) are a strict superset of the patch's condition. `detect_google_sorry` therefore always raises its own **bare** `SearxEngineCaptchaException()` — with no `suspended_time` argument — before the patched line can execute. Per `searx/exceptions.py` (`if suspended_time is None: suspended_time = self._get_default_suspended_time()`), that bare raise takes the `SearxEngineCaptcha` config value, so every observed Google `/sorry/` block suspends for 60 s in practice; the patch's `suspended_time=0` is real code that never runs. DuckDuckGo's two CAPTCHA raises, by contrast, *are* explicit and reachable `suspended_time=0` and stay immune to the config value. Raising `SearxEngineCaptcha` from 0 to 60 therefore bounds the residual bare-CAPTCHA tail without breaking exit-IP rotation.
 
 ### Redis
 
