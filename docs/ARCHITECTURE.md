@@ -128,7 +128,7 @@ The `searxng/searxng` base image declares `VOLUME /etc/searxng`. An existing con
 docker compose up -d --force-recreate --renew-anon-volumes searxng
 ```
 
-Confirm the change took by reading the active set back from the service rather than from the file: `curl -s localhost:8080/config | jq '[.engines[].name]'`.
+Confirm the change took by reading the active set back from the service rather than from the file. SearXNG has no host port in the local stack, so query it from inside the container: `docker compose exec searxng wget -qO- http://localhost:8080/config | jq '[.engines[].name]'` (pipe on the host; the container has `wget` but not `jq`).
 
 #### Engine-failure suspension policy
 
