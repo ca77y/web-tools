@@ -49,5 +49,5 @@ title: Bound and recover the shared Crawl4AI MCP client
     - `packages/toolkit/src/crawl4ai.ts` (whole file, 62 lines — shared client, `getClient`, `call`)
     - `packages/toolkit/src/functions.ts:52-99` (`proxyCrawl4AI` wrapper) and `functions.ts:155-168` (`web_fetch` crawl budget)
     - `packages/toolkit/src/config.ts` (existing `requestTimeout` / `parallelRequests` constants)
-    - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) - Failure Model: "Retries must be bounded and limited to operations known to be safe. Cancellation and timeout signals should propagate through the toolkit to provider clients where supported."
+    - [`../ARCHITECTURE.md`](../ARCHITECTURE.md) - Failure Model: "Retries must be bounded and limited to operations known to be safe. Cancellation and timeout signals should propagate through the toolkit to provider clients where supported." The shipped behavior is documented under Failure Model → "Crawl4AI MCP Client Lifecycle".
     - [`../PRODUCT.md`](../PRODUCT.md) - Phase 1 exit condition: "Crawl and fetch correctly classify upstream status, downloads, binary content, and browser failures."

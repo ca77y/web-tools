@@ -7,6 +7,7 @@ const envSchema = z.object({
   API_KEY: z.string().min(1, 'API_KEY is required'),
   CRAWL4AI_URL: z.string().default('http://crawl4ai.railway.internal:11235'),
   CRAWL4AI_API_TOKEN: z.string().optional(),
+  CRAWL4AI_CALL_TIMEOUT_MS: z.coerce.number().int().positive().default(150000),
   PROXY_SERVER: z.string().optional(),
   PROXY_USERNAME: z.string().optional(),
   PROXY_PASSWORD: z.string().optional(),
@@ -24,6 +25,7 @@ export const Config = {
   crawl4ai: {
     url: env.CRAWL4AI_URL,
     apiToken: env.CRAWL4AI_API_TOKEN,
+    callTimeoutMs: env.CRAWL4AI_CALL_TIMEOUT_MS,
   },
   proxy:
     env.PROXY_SERVER && env.PROXY_USERNAME
