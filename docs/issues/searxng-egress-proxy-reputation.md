@@ -1,6 +1,6 @@
 # SearXNG egress/proxy reputation blocking
 
-**Status:** open. No fix identified on our side. The leading hypothesis — egress exit-IP/ASN reputation — is **strongly supported but not yet confirmed**: the discriminating experiment in "Reproduction" below has not been run. Treat the conclusion as a well-evidenced working hypothesis, not a settled finding.
+**Status:** superseded on 2026-07-23. The reproduction below **was run**, and it both confirmed the egress hypothesis and overturned this note's central premise. There is no proxy in the path at all: production logs `Proxy: disabled` at boot, so requests egress directly from the Railway datacenter IP. The blocking is therefore not third-party *proxy-pool* reputation — it is an unproxied datacenter IP, which **is** fixable on our side. A fix is now identifiable, so per [`../CLAUDE.md`](../CLAUDE.md) this note is retained only as the evidence trail; the work lives in [`../tasks/searxng-configure-egress-proxy.md`](../tasks/searxng-configure-egress-proxy.md). See "Reproduction — performed" below before relying on anything else in this file.
 **First observed:** 2026-07-17 through 2026-07-18 UTC, Railway project `Agentic-Search` (`81b52d85-de3d-4208-a348-82aa0ef250e6`), environment `production`, SearXNG deployment `15ce2b88-cb4b-49f6-a3c6-72e97fd99db9`
 **Covers:** Mojeek HTTP 403, Qwant access denied, and the general cross-provider blocking pattern
 
@@ -63,7 +63,7 @@ Supporting signals, all within the same sample:
 
 1. **Engine configuration.** [`services/searxng/settings.yml`](../../services/searxng/settings.yml) was reviewed in full. A real configuration defect was found — `use_default_settings: true` does not restrict the engine set, so unintended engines (`wikidata`, `google cse`, `startpage`) were running. That defect is genuine and is tracked as a fixable story at [`../tasks/searxng-engine-set-and-suspension-policy.md`](../tasks/searxng-engine-set-and-suspension-policy.md). It explains *which* engines were failing but not *why* the configured ones (`mojeek`, `qwant`, `brave`, `duckduckgo`) are blocked.
 2. **Request volume amplification.** Confirmed a large multiplier: `Config.parallelRequests: 3` at [`packages/toolkit/src/config.ts:36`](../../packages/toolkit/src/config.ts) fires three identical concurrent SearXNG searches per `web_search`; `outgoing.retries: 3` at [`services/searxng/settings.yml:36`](../../services/searxng/settings.yml) allows 4 attempts per engine; `suspended_times` and `ban_time_on_fail` are all `0` ([`services/searxng/settings.yml:15-24`](../../services/searxng/settings.yml)) so blocked engines are retried on every search forever. This amplification plausibly *worsens* the reputation problem and is being reduced by the two linked stories — but it does not explain the immediate, broad, first-contact rejection by providers that have no prior request from us in that window.
-3. **Existing proxy mitigations.** The repository already carries substantial hard-won work on this exact problem, documented in comments at [`services/searxng/settings.yml:30-53`](../../services/searxng/settings.yml) and implemented in [`services/searxng/google_sorry_fix.py`](../../services/searxng/google_sorry_fix.py): US geo-targeting of the residential pool (the EU pool was found broadly `/sorry/`-blocked by Google), rotating rather than sticky sessions, a patch converting Google's 302/sorry into an immediately-retryable CAPTCHA so retries rotate to a fresh exit IP, and a tested decision to keep connection keep-alive on (`pool_maxsize: 20`) after per-request tunnel establishment was measured to be slower and less reliable (3/12 vs 7/10). The mitigations available within our configuration surface appear to have already been applied.
+3. **Existing proxy mitigations.** The repository already carries substantial hard-won work on this exact problem, documented in comments at [`services/searxng/settings.yml:30-53`](../../services/searxng/settings.yml) and implemented in `services/searxng/google_sorry_fix.py` (deleted 2026-07-23 with the `google` engine it supported): US geo-targeting of the residential pool (the EU pool was found broadly `/sorry/`-blocked by Google), rotating rather than sticky sessions, a patch converting Google's 302/sorry into an immediately-retryable CAPTCHA so retries rotate to a fresh exit IP, and a tested decision to keep connection keep-alive on (`pool_maxsize: 20`) after per-request tunnel establishment was measured to be slower and less reliable (3/12 vs 7/10). The mitigations available within our configuration surface appear to have already been applied.
 4. **Upstream documentation.** SearXNG's settings documentation (<https://docs.searxng.org/admin/settings/settings_outgoing.html>) exposes proxies, timeouts, retries, and connection pooling. It offers no mechanism that changes how a third-party provider judges our exit IP's reputation.
 
 ## Confounds not yet ruled out
@@ -78,6 +78,8 @@ Running the reproduction below resolves all three cheaply. Until it is run, the 
 
 ## Why no solution could be identified
 
+> **Superseded — read "Reproduction — performed" first.** This section's argument rests on the premise that our traffic leaves through a third-party rotating residential proxy whose reputation we cannot influence. That premise is false: `PROXY_URL` is unset and production egresses directly from the Railway datacenter IP. A solution *is* identifiable — configure egress proxying — and is tracked in [`../tasks/searxng-configure-egress-proxy.md`](../tasks/searxng-configure-egress-proxy.md). The text below is kept unedited as the record of what was believed at the time.
+
 Scoped to the 403 / access-denied pattern this issue actually tracks (Mojeek, Qwant), and regardless of which confound dominates *within* that subset, the root cause sits outside every surface this repository controls. Note this argument deliberately does **not** extend to the rate-limiting subset (`brave`, `wikipedia`, `google cse`), where our own request volume is a live and fully repo-fixable explanation addressed by the two linked stories:
 
 - **The exit IPs are not ours.** They belong to a third-party rotating residential proxy vendor and are shared with that vendor's other customers. Their reputation with Google, Brave, Mojeek, Qwant, Startpage, and DuckDuckGo is set by aggregate traffic from all those customers, which we cannot observe or influence.
@@ -87,9 +89,48 @@ Scoped to the 403 / access-denied pattern this issue actually tracks (Mojeek, Qw
 
 The remaining honest engineering response is not to fix the blocking but to make it *visible and correctly reported* — see "Related work" below.
 
-## Reproduction
+## Reproduction — performed 2026-07-23
 
-Not yet performed. The intended protocol, which would confirm or refute the reputation hypothesis:
+The protocol below was run. Two findings, the second of which invalidates this note's framing.
+
+### Finding 1 — production runs with no proxy at all
+
+`services/searxng/Dockerfile`'s entrypoint branches on `PROXY_URL` and echoes which branch it took. The current production deployment (`01de4f18-8c5a-4265-bd2a-dfe8d99e2be8`, 2026-07-23T21:25:22Z) logs:
+
+```text
+Proxy: disabled
+```
+
+`PROXY_URL` is unset, so the entrypoint's `sed` strips the entire `proxies:` block. Every tuned setting in `settings.yml` predicated on a rotating residential pool — US geo-targeting, rotation-not-sticky sessions, the `pool_maxsize: 20` keep-alive decision measured at 3/12 vs 7/10 — is **inert**. All requests leave from the Railway datacenter IP.
+
+This contradicts the "Why no solution could be identified" section below, which reasons from "the exit IPs are not ours… they belong to a third-party rotating residential proxy vendor and are shared with that vendor's other customers." There is no vendor in the path. That section's conclusion should be read as void; its individual observations about provider opacity remain accurate.
+
+### Finding 2 — the same engines work from a clean residential IP
+
+Steps 2 and 3 of the protocol, run against the identical engine set. Production was measured through the deployed `web_search` tool (datacenter egress, unproxied); the clean-IP arm used the local Compose stack on a residential connection. Six sequential queries per engine.
+
+| Engine | Clean residential IP | Production (datacenter, unproxied) |
+|---|---|---|
+| `mojeek` | **6/6 results** | fails every attempt (403 in the log sample) |
+| `qwant` | **6/6 results** | fails every attempt (access denied) |
+| `google cse` | **6/6, ~20 results each** | fails ("unusual traffic from your network") |
+| `bing` | 6/6 results | works |
+| `brave` | works | works |
+| `duckduckgo` | 3/6 (CAPTCHA) | fails |
+
+**Mojeek and Qwant — the two engines this note tracks as unfixable — return results reliably from a clean IP.** That is the discriminator the protocol was designed to produce: the engines are not misconfigured and are not permanently blocked; the egress path is the variable.
+
+Production currently searches on **two of seven** engines (`bing`, `brave`).
+
+### Caveats on this run
+
+- The exit IP was *not* recorded for the residential arm, which the protocol requires. It is a consumer connection with no static address; the finding rests on the datacenter/residential contrast, not on a specific address.
+- Step 4 (single vs three concurrent requests) was **not** run, so request-volume amplification is not fully separated from egress reputation as a contributor to the *rate-limiting* subset. The 403/access-denied subset is settled by the table above; the `brave`/`wikipedia` rate-limit subset is not.
+- Engine suspension state contaminates back-to-back measurements — an engine burned by a previous probe reports failure for up to 300 s regardless of egress. Both arms were re-measured across separate rounds to control for this, and Mojeek in particular was observed both working and access-denied within the same session on the *same* IP.
+
+### The original protocol
+
+For reference, the steps as originally specified:
 
 1. Pick one fixed query, e.g. `Railway cloud deployment platform`.
 2. Run it once from the Railway deployment through the configured proxy. Record the proxy exit IP and the per-engine outcome.

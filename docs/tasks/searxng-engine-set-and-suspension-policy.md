@@ -7,6 +7,7 @@ title: Restrict the SearXNG engine set and bound engine failure suspension
 
 - [x] Restrict the SearXNG engine set and bound engine failure suspension #bug ⏫ 🆔 searxng-engine-set-and-suspension-policy
   - Phase: Phase 1 - Reliable Core
+  - **Partially superseded 2026-07-23.** Two decisions recorded below have since changed: `google` was removed from the allowlist and replaced by `google cse` (the engine is JS-gated and returned silent empty results on every query), and `google_sorry_fix.py` was deleted rather than preserved, since it existed only to prop that engine up. The suspension policy and the `keep_only` mechanism are unchanged. Current state is documented in [`../ARCHITECTURE.md`](../ARCHITECTURE.md); the egress cause behind the `mojeek`/`qwant` caveat below is now tracked in [`searxng-configure-egress-proxy.md`](./searxng-configure-egress-proxy.md).
   - **Problem.** Our SearXNG instance runs engines we never configured, and retries permanently-blocked engines forever. Together these generate hundreds of avoidable upstream failures per hour and amplify the traffic that gets our egress blocked.
   - **Evidence — unintended engines are active.** [`services/searxng/settings.yml`](../../services/searxng/settings.yml) sets `use_default_settings: true` (line 1) and then lists exactly seven engines under `engines:` (lines 55-93): `google`, `brave`, `duckduckgo`, `bing`, `qwant`, `mojeek`, `wikipedia`. Production logs from 2026-07-18 show three engines that appear nowhere in that list producing failures: `wikidata`, `google cse`, and `startpage`.
   - **Root cause (confirmed against upstream docs).** With `use_default_settings: true`, a local `engines:` list does **not** restrict the engine set. Per <https://docs.searxng.org/admin/settings/settings.html#use-default-settings>: "With `use_default_settings: true`, each settings can be override in a similar way, the `engines` section is merged according to the engine `name`... SearXNG will load **all the default engines**". Our seven entries are therefore per-engine *overrides* layered on top of the full upstream default engine set, not an allowlist. The documented mechanism to restrict the set is the mapping form of `use_default_settings`:
@@ -93,7 +94,7 @@ title: Restrict the SearXNG engine set and bound engine failure suspension
   - References:
     - [`services/searxng/settings.yml`](../../services/searxng/settings.yml) — lines 1 (`use_default_settings`), 15-24 (suspension), 26-53 (`outgoing`/proxy), 55-93 (engines)
     - [`services/searxng/Dockerfile`](../../services/searxng/Dockerfile) — image build, `google_sorry_fix.py` patch, proxy-injection entrypoint
-    - [`services/searxng/google_sorry_fix.py`](../../services/searxng/google_sorry_fix.py)
+    - `services/searxng/google_sorry_fix.py` — deleted 2026-07-23; see the superseded note above
     - [`packages/toolkit/src/config.ts`](../../packages/toolkit/src/config.ts) — `parallelRequests: 3`, `requestTimeout: 15`
     - [`packages/toolkit/src/searxng.ts`](../../packages/toolkit/src/searxng.ts) — client fan-out
     - SearXNG `use_default_settings` / `keep_only`: <https://docs.searxng.org/admin/settings/settings.html#use-default-settings>
