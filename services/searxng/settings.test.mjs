@@ -25,25 +25,35 @@ const text = readFileSync(settingsPath, 'utf8');
 const EXPECTED_KEEP_ONLY = [
   'google cse',
   'brave',
-  'duckduckgo',
+  'duckduckgo web',
   'bing',
-  'qwant',
   'mojeek',
+  'yandex',
+  'dogpile',
+  'gmx',
   'wikipedia',
 ];
 
 /**
- * `google` is forbidden, not merely absent. Upstream ships it `inactive: true`
- * because its HTML endpoint is JS-gated: every response is Google's "enablejs"
- * interstitial, the XPath selectors match nothing, and *nothing raises* — so
- * the engine reports a successful search with zero results on every query.
- * Re-adding it silently degrades search rather than failing loudly.
+ * These engines are forbidden, not merely absent — each was measured broken
+ * in a way that re-adding would silently or loudly degrade search:
+ *
+ * - `google`: upstream ships it `inactive: true` because its HTML endpoint is
+ *   JS-gated: every response is Google's "enablejs" interstitial, the XPath
+ *   selectors match nothing, and *nothing raises* — a successful search with
+ *   zero results on every query.
+ * - `qwant`: Datadome bot protection CAPTCHAs every request from any IP;
+ *   upstream has no fix (searxng/searxng#3929, removed here 2026-07-24).
+ * - `duckduckgo`: the html.duckduckgo.com lite scraper draws a CAPTCHA after
+ *   ~2 queries even from a clean residential IP; replaced by `duckduckgo web`
+ *   (the links.duckduckgo.com/d.js JSON API), which sustained 6/6.
+ * - `startpage`: instant CAPTCHA on first contact (probed 2026-07-24).
  *
  * `google cse` was on this list while it was an unintended engine loaded by the
  * old scalar `use_default_settings: true`; it is now a deliberate choice and so
  * moved to EXPECTED_KEEP_ONLY.
  */
-const FORBIDDEN_ENGINES = ['wikidata', 'startpage', 'google'];
+const FORBIDDEN_ENGINES = ['wikidata', 'startpage', 'google', 'qwant', 'duckduckgo'];
 
 const SUSPENDED_TIMES_KEYS = [
   'SearxEngineCaptcha',
@@ -153,7 +163,7 @@ describe('services/searxng/settings.yml — engine allowlist', () => {
     assert.match(block, /^\s*keep_only:\s*$/m);
   });
 
-  test('keep_only contains exactly the seven intended engines (order-independent)', () => {
+  test('keep_only contains exactly the nine intended engines (order-independent)', () => {
     const keepOnly = parseYamlList(sections.use_default_settings.text, 'keep_only:');
     assert.deepStrictEqual(
       [...keepOnly].sort(),
@@ -180,12 +190,19 @@ describe('services/searxng/settings.yml — engine allowlist', () => {
     }
   });
 
-  test('forbidden engines (wikidata, startpage, google) are absent from keep_only', () => {
+  test('forbidden engines (wikidata, startpage, google, qwant, duckduckgo) are absent from keep_only and engines:', () => {
     const keepOnly = parseYamlList(sections.use_default_settings.text, 'keep_only:');
+    const localNames = [
+      ...sections.engines.text.matchAll(/^\s*-\s*name:\s*(\S.*?)\s*$/gm),
+    ].map((m) => m[1]);
     for (const forbidden of FORBIDDEN_ENGINES) {
       assert.ok(
         !keepOnly.includes(forbidden),
         `keep_only must not contain "${forbidden}"`,
+      );
+      assert.ok(
+        !localNames.includes(forbidden),
+        `engines: must not declare "${forbidden}"`,
       );
     }
   });
@@ -218,6 +235,19 @@ describe('services/searxng/settings.yml — engine allowlist', () => {
       'google cse must not carry an inactive: override',
     );
     assert.match(entry[0], /^\s*engine:\s*google_cse\s*$/m);
+  });
+
+  test('default_lang is auto, and the mojeek locale-cookie trap is documented', () => {
+    // `default_lang: en` resolves to mojeek locale cookies `lb=en; arc=us`,
+    // which trip mojeek's bot detection into the silent-empty failure mode
+    // (0 results, nothing raised — measured 2026-07-24, single-variable test
+    // on the stock image: 6/6 with auto, 0/6 with en, same IP). Anyone
+    // "restoring" an English default must find this rationale in the file.
+    const searchBlock = sections.search.text;
+    assert.match(searchBlock, /^\s*default_lang:\s*auto\s*$/m);
+    const langRegion = searchBlock.slice(0, searchBlock.indexOf('default_lang:'));
+    assert.match(langRegion, /mojeek/i);
+    assert.match(langRegion, /lb=en/);
   });
 
   test('the third-party CX that google cse depends on is documented as a risk', () => {

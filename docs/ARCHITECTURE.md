@@ -92,9 +92,9 @@ SearXNG owns metasearch aggregation. Web Tools normalizes useful search fields a
 
 #### Engine allowlist
 
-`use_default_settings` is written in **mapping form** with `engines.keep_only` restricting the active set to exactly seven engines: `google cse`, `brave`, `duckduckgo`, `bing`, `qwant`, `mojeek`, and `wikipedia`.
+`use_default_settings` is written in **mapping form** with `engines.keep_only` restricting the active set to exactly nine engines: `google cse`, `brave`, `duckduckgo web`, `bing`, `mojeek`, `yandex`, `dogpile`, `gmx`, and `wikipedia`.
 
-The mapping form is load-bearing. The prior scalar `use_default_settings: true` does **not** restrict the engine set — per the [upstream docs](https://docs.searxng.org/admin/settings/settings.html#use-default-settings), a local `engines:` list under scalar `true` is merged as per-engine *overrides* on top of the full upstream default engine set, so SearXNG silently loaded every default engine, including `wikidata`, `google cse`, and `startpage`. Those three unintended engines were the single largest source of observed upstream failures — 290 of 705 non-timeout failures (41%) in the production sample. `keep_only` is the documented mechanism that makes the seven-name list an allowlist. The two forms are alternatives, not additive, so the scalar was removed.
+The mapping form is load-bearing. The prior scalar `use_default_settings: true` does **not** restrict the engine set — per the [upstream docs](https://docs.searxng.org/admin/settings/settings.html#use-default-settings), a local `engines:` list under scalar `true` is merged as per-engine *overrides* on top of the full upstream default engine set, so SearXNG silently loaded every default engine, including `wikidata`, `google cse`, and `startpage`. Those three unintended engines were the single largest source of observed upstream failures — 290 of 705 non-timeout failures (41%) in the production sample. `keep_only` is the documented mechanism that makes the nine-name list an allowlist. The two forms are alternatives, not additive, so the scalar was removed.
 
 The local `engines:` list is retained and continues to merge per-engine overrides (`shortcut`, `use_mobile_ui`, `disabled`) by name. No engine now carries an `inactive:` override, and that absence is deliberate — see below.
 
@@ -108,7 +108,17 @@ Measured against the built image using the engine's own request, plus the `udm=1
 
 Removing the engine also made `services/searxng/google_sorry_fix.py` obsolete; it was deleted along with the Dockerfile step that applied it, so the image no longer patches or recompiles the upstream `searx` sources.
 
-`mojeek` and `qwant` are deliberately kept in the allowlist despite high observed failure rates (403 / access-denied, 94 and 93 times respectively in the sample). Their blocking is egress-driven, not configuration-driven — a hypothesis that was **confirmed on 2026-07-23**: both answer 6/6 sequential queries from a clean residential IP while failing every attempt from the unproxied production egress. See [`issues/searxng-egress-proxy-reputation.md`](./issues/searxng-egress-proxy-reputation.md). The policy is therefore "keep and suspend on failure"; the suspension policy below bounds their retry cost, and [`tasks/searxng-configure-egress-proxy.md`](./tasks/searxng-configure-egress-proxy.md) tracks the actual fix.
+##### The 2026-07-24 engine-set revision
+
+Per-engine measurement on 2026-07-24 (stock image, single-variable config tests, sequential probes from a residential IP) corrected two prior beliefs and expanded the set from seven engines to nine:
+
+- **`mojeek`'s failures were configuration-driven, not egress-driven.** The 2026-07-23 conclusion that mojeek's 403s were "an egress verdict" was wrong. `search.default_lang: en` resolves to the mojeek locale cookies `lb=en; arc=us`, and that cookie pair trips mojeek's bot detection into the silent-empty failure mode (0 results, nothing raised — upstream context: [searxng#4307](https://github.com/searxng/searxng/issues/4307)). Single-variable test: 6/6 with `default_lang: auto`, 0/6 with `en`, same IP, same hour. The fix is `default_lang: auto`; English bias is preserved because language detection follows the query. Production's unproxied egress remains a real, separately measured blocker for other engines.
+- **`qwant` was removed.** It is protected by Datadome and CAPTCHAs every request from any IP; upstream has no fix and every community workaround has been counter-adapted within days ([searxng#3929](https://github.com/searxng/searxng/issues/3929), open — a maintainer suggests removing the engine).
+- **`duckduckgo` was replaced by `duckduckgo web`.** The old engine scrapes the `html.duckduckgo.com` lite page and drew a CAPTCHA after ~2 queries even from a clean residential IP. `duckduckgo web` drives the `links.duckduckgo.com/d.js` JSON API — the endpoint DDG's real frontend calls — and sustained 6/6.
+- **`yandex`, `dogpile`, and `gmx` were added**, each 6/6 sustained in the probe: yandex brings a genuinely distinct index (10–14 results/query); dogpile (Google+Yahoo metasearch, 8/query) and gmx (Google-backed, 10/query) overlap `google cse`, which is useful — merged ranking boosts URLs reported by multiple engines.
+- **Probed and rejected:** `startpage` (instant CAPTCHA), `yahoo` (HTTP protocol error), `presearch` (3/6, timeouts), `yep` (20/query but poor result quality — mailing-list-archive spam on technical queries), `infospace` (works, but redundant with dogpile).
+
+Local aggregate after the revision: 53–61 results per query from 7–8 responding engines, versus 30–39 from 2–3 before. [`tasks/searxng-configure-egress-proxy.md`](./tasks/searxng-configure-egress-proxy.md) still tracks the production egress fix; its 2026-07-23 evidence table predates this revision and its mojeek/qwant rows are corrected by it.
 
 ##### Operational trap: `/etc/searxng` is a volume
 
@@ -126,10 +136,10 @@ Confirm the change took by reading the active set back from the service rather t
 
 | Class / key | Value (s) | Rationale |
 |---|---:|---|
-| `SearxEngineCaptcha` | 60 | Most rotation-recoverable — a clean exit IP clears a challenge page; a minimal circuit breaker for the residual tail. Engines that genuinely recover by rotating (DuckDuckGo) raise this class with an explicit `suspended_time=0`, which overrides this value entirely. Upstream default 86400. |
+| `SearxEngineCaptcha` | 60 | Most rotation-recoverable — a clean exit IP clears a challenge page; a minimal circuit breaker for the residual tail. An engine that raises this class with an explicit `suspended_time=0` (as the since-replaced `duckduckgo` engine did) overrides this value entirely. Upstream default 86400. |
 | `SearxEngineTooManyRequests` | 120 | 429 / rate-limit is largely volume-driven and decays with time; kept short so these core engines re-test quickly. Upstream default 3600. |
 | `SearxEngineAccessDenied` | 300 | 403 points at per-ASN / fingerprint reputation a fresh exit IP will not fix; suspend longest to stop hammering, but only 5 min because the rotating pool's standing can change. Upstream default 86400. |
-| `cf_SearxEngineCaptcha` | 300 | Cloudflare / reCAPTCHA challenges are per-fingerprint/session, not rotation-recoverable; treated like durable access-denied. None of the seven allowlisted engines raise these today — bounding them pre-empts inheriting upstream's 15-day / 7-day / 1-day defaults if one starts to. |
+| `cf_SearxEngineCaptcha` | 300 | Cloudflare / reCAPTCHA challenges are per-fingerprint/session, not rotation-recoverable; treated like durable access-denied. None of the nine allowlisted engines raise these today — bounding them pre-empts inheriting upstream's 15-day / 7-day / 1-day defaults if one starts to. |
 | `cf_SearxEngineAccessDenied` | 300 | As above. |
 | `recaptcha_SearxEngineCaptcha` | 300 | As above. |
 | `ban_time_on_fail` | 5 | Generic first-failure cooldown for class-less failures (timeouts, connection resets), e.g. DuckDuckGo's 117 sample timeouts. |
