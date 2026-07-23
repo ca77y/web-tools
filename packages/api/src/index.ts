@@ -24,6 +24,16 @@ const keyMatches = (provided: string | undefined, expected: string): boolean => 
 
 logEvent('startup_check', { searxngUrl: Config.searxng.url });
 
+// An unset API_KEY disables authentication entirely. That is intended for a
+// local stack (no credentials to manage), and dangerous anywhere reachable,
+// so it is announced loudly rather than passing silently.
+if (!Config.apiKey) {
+  logEvent('auth_disabled', {
+    warning:
+      'API_KEY is not set — every route except /health is served WITHOUT authentication. Set API_KEY for any non-local deployment.',
+  });
+}
+
 export const app: Express = express();
 app.use(requestLogMiddleware);
 app.use(express.json());
@@ -32,6 +42,8 @@ app.use(express.json());
 
 app.use((req: Request, res: Response, next) => {
   if (req.path === '/health') return next();
+  // No key configured — run open. See the startup warning above.
+  if (!Config.apiKey) return next();
 
   const provided =
     req.headers.authorization?.replace(/^Bearer\s+/i, '') ||

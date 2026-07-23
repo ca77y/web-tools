@@ -355,21 +355,15 @@ cd web-tools
 pnpm install
 ```
 
-### 2. Configure environment
-
-```bash
-cp .env.example .env.local
-```
-
-### 3. Start the local stack
+### 2. Start the local stack
 
 ```bash
 docker compose up -d redis searxng crawl4ai
 ```
 
-This starts Redis, SearXNG, and Crawl4AI.
+This starts Redis, SearXNG, and Crawl4AI. The local stack needs **no configuration and no credentials** — no `.env.local`, no exported token, no API key.
 
-**Before the stack is usable for crawls:** export `CRAWL4AI_API_TOKEN` in your shell before the command above, e.g. `export CRAWL4AI_API_TOKEN=<token>` — setting it only in `.env.local` does not reach the `crawl4ai` service (Compose interpolates `${CRAWL4AI_API_TOKEN}` from your shell environment or a default `.env` file, never from `.env.local`; the host-run server below does read `.env.local`, so the shell export is needed for the container, not for it). Without a token, Crawl4AI binds `127.0.0.1` inside its own container and its published port refuses connections from the host, so `pnpm run start` below still boots, but every `web_fetch`, crawl, screenshot, PDF, and JavaScript-execution request fails.
+Compose supplies `CRAWL4AI_API_TOKEN` itself, defaulting to the literal `local-dev-token`. That value is not a secret and guards nothing: Crawl4AI binds `127.0.0.1` inside its own container when the token is empty, which makes it unreachable from every other container, so a non-empty value exists purely to keep the listener on `0.0.0.0`. Export your own `CRAWL4AI_API_TOKEN` to override it.
 
 **First run only:** the SearXNG and Crawl4AI images build locally instead of pulling, so it takes noticeably longer than a pull — this is expected, not a hang.
 
@@ -383,19 +377,21 @@ SEARXNG_URL=http://localhost:8080 CRAWL4AI_URL=http://localhost:11235 pnpm run s
 
 The server is available at `http://localhost:3000`.
 
-### 4. Or run everything in Docker
+### 3. Or run everything in Docker
 
 ```bash
 docker compose up
 ```
 
-As in step 3, the first run builds the images locally before starting, so expect several minutes on a cold cache. Unlike step 3, `web_tools` now runs in its own container, which reads `CRAWL4AI_API_TOKEN` only from `.env.local` (via `env_file`), not from your shell — while Crawl4AI itself still reads the token only from your shell. So before this command, set the same value in **both** places: uncomment and set `CRAWL4AI_API_TOKEN` in `.env.local`, and also `export CRAWL4AI_API_TOKEN=<token>` in your shell. Skipping either leaves `web_tools` unable to authenticate with Crawl4AI, or Crawl4AI unreachable altogether. Apple Silicon and other arm64 hosts need no extra configuration — see step 3 for why.
+As in step 2, the first run builds the images locally before starting, so expect several minutes on a cold cache. `web_tools` now runs in its own container; Compose passes it the same `CRAWL4AI_API_TOKEN` default it passes Crawl4AI, so the two agree with no setup on your part.
+
+`API_KEY` is deliberately left unset here, so the local stack serves every route **unauthenticated** and the server logs an `auth_disabled` warning at startup. That is fine on a local machine and unsafe anywhere reachable — set `API_KEY` for any deployment.
 
 ## Environment Variables
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `API_KEY` | Yes | Bearer token for authentication (auto-generated on Railway) |
+| `API_KEY` | No (set it anywhere reachable) | Bearer token for authentication (auto-generated on Railway). **Unset disables authentication entirely** — intended for a local stack only |
 | `SEARXNG_URL` | No | SearXNG URL (default: `http://searxng.railway.internal:8080`) |
 | `CRAWL4AI_URL` | No | Crawl4AI URL (default: `http://crawl4ai.railway.internal:11235`) |
 | `CRAWL4AI_API_TOKEN` | No | API token for Crawl4AI authentication |
@@ -405,13 +401,13 @@ As in step 3, the first run builds the images locally before starting, so expect
 
 ## Authentication
 
-The `API_KEY` environment variable is **required**.
+Authentication is controlled entirely by the `API_KEY` environment variable.
 
-On Railway, the key is auto-generated at deploy time (via `${{secret()}}`). For local development, set it in your `.env.local` file.
+**When `API_KEY` is set**, clients provide it as a `Bearer` token in the `Authorization` header or as an `?api_key=` query parameter. Only `/health` is unauthenticated; everything else — MCP, REST discovery, REST tool execution, `/ready`, and `/stats` — requires the key. See [Operational Endpoints](#operational-endpoints).
 
-Clients provide the key as a `Bearer` token in the `Authorization` header or as an `?api_key=` query parameter.
+**When `API_KEY` is unset**, the auth middleware is bypassed and *every* route is served without credentials. The server logs an `auth_disabled` warning at startup so this can never happen quietly. This exists so the local Compose stack runs with nothing to configure — never rely on it for anything reachable from a network.
 
-Only `/health` is unauthenticated. Everything else — MCP, REST discovery, REST tool execution, `/ready`, and `/stats` — requires the key. See [Operational Endpoints](#operational-endpoints).
+On Railway the key is auto-generated at deploy time (via `${{secret()}}`), so deployed environments are authenticated by default.
 
 ## Request Correlation
 

@@ -4,7 +4,11 @@ const envSchema = z.object({
   SEARXNG_URL: z.string().default('http://searxng.railway.internal:8080'),
   SEARXNG_ENGINES: z.string().optional(),
   SEARXNG_CATEGORIES: z.string().optional(),
-  API_KEY: z.string().min(1, 'API_KEY is required'),
+  // Optional so a local stack runs with no credentials at all. When it is
+  // unset the API serves every route unauthenticated — see the startup
+  // warning in packages/api/src/index.ts. Deployed environments must set it;
+  // Railway generates one via `${{secret()}}`.
+  API_KEY: z.string().min(1).optional(),
   CRAWL4AI_URL: z.string().default('http://crawl4ai.railway.internal:11235'),
   CRAWL4AI_API_TOKEN: z.string().optional(),
   CRAWL4AI_CALL_TIMEOUT_MS: z.coerce.number().int().positive().default(150000),

@@ -443,8 +443,14 @@ describe('requestLogMiddleware - secrets never reach the logs', () => {
         assert.ok(httpRequestRecord, 'expected an inbound request record');
 
         const joined = lines.join('\n');
+        // Config.apiKey is optional now (an unset key disables auth), but this
+        // file boots with one configured — assert that before using it, so a
+        // regression that drops the key fails here instead of vacuously
+        // passing a redaction check against `undefined`.
+        const configuredKey = Config.apiKey;
+        assert.ok(configuredKey, 'this test requires API_KEY to be configured');
         assert.ok(
-          !joined.includes(Config.apiKey),
+          !joined.includes(configuredKey),
           'the configured key must appear in no captured line',
         );
         assert.ok(

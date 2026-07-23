@@ -23,7 +23,11 @@ services:
     ports:
       - "11235:11235"
     environment:
-      - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-}
+      # Crawl4AI binds 127.0.0.1 inside its own container when this is empty,
+      # which makes it unreachable from web_tools. The value is not a secret —
+      # it exists only to keep the listener on 0.0.0.0. Both services default
+      # to the same literal so the local stack needs no configuration.
+      - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-local-dev-token}
 
   web_tools:
     restart: unless-stopped
@@ -36,8 +40,8 @@ services:
       - SEARXNG_URL=http://searxng:8080
       - CRAWL4AI_URL=http://crawl4ai:11235
       - PORT=3000
-    env_file:
-      - .env.local
+      - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-local-dev-token}
+      # API_KEY is deliberately unset: the local stack runs unauthenticated.
     depends_on:
       - searxng
       - crawl4ai
