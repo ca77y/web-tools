@@ -3,10 +3,12 @@ use_default_settings:
     keep_only:
       - google cse
       - brave
-      - duckduckgo
+      - duckduckgo web
       - bing
-      - qwant
       - mojeek
+      - yandex
+      - dogpile
+      - gmx
       - wikipedia
 
 server:
@@ -20,7 +22,15 @@ search:
   formats:
     - json
   safe_search: 0
-  default_lang: en
+  # `auto` (detect from the query), NOT `en`. `en` resolves to the locale
+  # cookies `lb=en; arc=us` for mojeek, and that cookie pair trips mojeek's
+  # bot detection: measured 2026-07-24 on the stock image, mojeek answers
+  # 6/6 with `auto` and 0/6 (silent empty — zero results, nothing raised)
+  # with `en`, same IP, single-variable test. Upstream context:
+  # https://github.com/searxng/searxng/issues/4307 (region params tripping
+  # "automated tools detection"). English bias is preserved in practice
+  # because queries are English and detection follows the query.
+  default_lang: auto
   suspended_times:
     # Class-keyed DEFAULT suspend durations (seconds). SearXNG applies these
     # per-engine-network (see searx/search/processors/abstract.py:
@@ -36,18 +46,17 @@ search:
     # CAPTCHA, latest for AccessDenied.
 
     # CAPTCHA is the most rotation-recoverable class: a clean exit IP clears a
-    # challenge page, so this class is re-tested soonest. DuckDuckGo, Qwant and
-    # Mojeek all reach it through our egress.
+    # challenge page, so this class is re-tested soonest.
     #
-    # 60s is a circuit breaker, not a brake on rotation. The engines that
-    # actually recover by rotating raise this class with an EXPLICIT
-    # `suspended_time=0` (duckduckgo.py does so twice), and an explicit value
-    # always wins over this config default — so the engines that benefit most
-    # from an immediate retry are unaffected by the number here. This value
-    # applies only to a BARE raise, where it bounds the tail: after four failed
-    # attempts, any search dispatched in the next 60s skips re-gambling on that
-    # engine instead of repeating the same losing rotation. Upstream's default
-    # is 86400 (24h), which would drop the engine for a whole day.
+    # 60s is a circuit breaker, not a brake on rotation. An engine that raises
+    # this class with an EXPLICIT `suspended_time=0` (upstream duckduckgo.py
+    # did so twice, before that engine was swapped for `duckduckgo web` on
+    # 2026-07-24) always wins over this config default — so any engine built
+    # to recover by immediate retry is unaffected by the number here. This
+    # value applies only to a BARE raise, where it bounds the tail: after four
+    # failed attempts, any search dispatched in the next 60s skips re-gambling
+    # on that engine instead of repeating the same losing rotation. Upstream's
+    # default is 86400 (24h), which would drop the engine for a whole day.
     #
     # Suspension never interrupts the in-search rotation: outgoing.retries: 3
     # rotates exit IPs entirely WITHIN one search's outgoing HTTP request/retry
@@ -59,17 +68,20 @@ search:
     # decays with time; 2 min lets the rate window drain and re-tests quickly
     # because these are core engines. Upstream default is 3600 (1h).
     SearxEngineTooManyRequests: 120
-    # 403 / access-denied (mojeek, qwant on first contact) points at per-ASN /
-    # fingerprint reputation that a fresh exit IP will NOT fix; suspend longest
-    # so we stop hammering, but only 5 min (not upstream's 86400 = 24h) because
-    # the standing of whatever egress we run on can change and is worth
-    # re-testing. Measured 2026-07-23: mojeek and qwant both answer 6/6 from a
-    # clean residential IP and fail every time from the unproxied production
-    # egress, so this class is an egress verdict, not an engine verdict.
+    # 403 / access-denied points at per-ASN / fingerprint reputation that a
+    # fresh exit IP will NOT fix; suspend longest so we stop hammering, but
+    # only 5 min (not upstream's 86400 = 24h) because the standing of whatever
+    # egress we run on can change and is worth re-testing.
+    # 2026-07-24 correction to the 2026-07-23 measurement: mojeek's local
+    # failures were NOT an egress verdict — they were caused by
+    # `default_lang: en` locale cookies (see the default_lang comment above),
+    # and qwant is Datadome-blocked from every IP and has been removed. The
+    # unproxied production egress remains a real, separately measured blocker
+    # (docs/tasks/searxng-configure-egress-proxy.md).
     SearxEngineAccessDenied: 300
     # Cloudflare / reCAPTCHA challenges are per-fingerprint/session, not exit-IP
     # rotation-recoverable, so treat them like durable access-denied. None of the
-    # seven allowlisted engines raise these today; bounding them prevents ever
+    # nine allowlisted engines raise these today; bounding them prevents ever
     # inheriting upstream's 15-day / 7-day / 1-day defaults if one starts to.
     cf_SearxEngineCaptcha: 300
     cf_SearxEngineAccessDenied: 300
@@ -148,10 +160,14 @@ engines:
     use_mobile_ui: false
     disabled: false
 
-  - name: duckduckgo
-    engine: duckduckgo
-    shortcut: d
-    use_mobile_ui: false
+  # Replaces the `duckduckgo` engine (removed 2026-07-24). That engine scrapes
+  # the html.duckduckgo.com lite page and drew a CAPTCHA after ~2 queries even
+  # from a clean residential IP. `duckduckgo web` instead drives the
+  # links.duckduckgo.com/d.js JSON API — the endpoint DDG's real frontend
+  # calls — and sustained 6/6 queries in the 2026-07-24 probe.
+  - name: duckduckgo web
+    engine: duckduckgo_web
+    shortcut: ddgw
     disabled: false
 
   - name: bing
@@ -159,16 +175,43 @@ engines:
     shortcut: bi
     disabled: false
 
-  - name: qwant
-    engine: qwant
-    shortcut: qw
-    disabled: false
+  # `qwant` was removed 2026-07-24: it is protected by Datadome and CAPTCHAs
+  # every request from any IP; upstream has no fix and a maintainer suggests
+  # removing the engine (https://github.com/searxng/searxng/issues/3929).
 
   - name: mojeek
     engine: mojeek
     shortcut: mj
     disabled: false
 
+  # Added 2026-07-24: distinct index from the Google/Bing-backed engines;
+  # sustained 6/6 with 10-14 results per query in the probe.
+  - name: yandex
+    engine: yandex
+    search_type: web
+    shortcut: yd
+    disabled: false
+
+  # Added 2026-07-24: Google+Yahoo metasearch, 8 results per query, 6/6
+  # sustained. Result set overlaps google cse — the overlap is useful, it
+  # boosts merged ranking for URLs both report.
+  - name: dogpile
+    engine: dogpile
+    dogpile_categ: search
+    shortcut: dog
+    disabled: false
+
+  # Added 2026-07-24: Google-backed portal search, 10 results per query,
+  # 6/6 sustained.
+  - name: gmx
+    engine: gmx
+    shortcut: gmx
+    disabled: false
+
+  # Infobox-only: contributes `infoboxes` entries for entity queries and never
+  # adds to `results` (measured 2026-07-24: entity queries return results=0,
+  # infoboxes=1). Kept deliberately for direct SearXNG use; the toolkit's
+  # web_search does not surface infoboxes.
   - name: wikipedia
     engine: wikipedia
     shortcut: w

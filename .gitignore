@@ -56,3 +56,6 @@ services/searxng/__pycache__/
 
 # Story worktrees
 .worktrees/
+
+# Local hybrid-dev port overrides (see README)
+docker-compose.override.yml

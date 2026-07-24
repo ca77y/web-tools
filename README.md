@@ -369,13 +369,26 @@ Compose supplies `CRAWL4AI_API_TOKEN` itself, defaulting to the literal `local-d
 
 Both images build and run natively on arm64 (Apple Silicon) as well as amd64 — `unclecode/crawl4ai:0.9.1` publishes both manifests, and `services/crawl4ai/Dockerfile`'s build guard accepts either architecture's Playwright headless-shell layout. No emulation, no extra configuration.
 
+The backing services are intentionally **not** published to the host — only the `web_tools` container gets a host port. To run the server natively against them, publish their ports temporarily with a Compose override file (Compose auto-loads `docker-compose.override.yml`; keep it out of version control):
+
+```yaml
+# docker-compose.override.yml — local hybrid-dev only
+services:
+  searxng:
+    ports:
+      - "127.0.0.1:8080:8080"
+  crawl4ai:
+    ports:
+      - "127.0.0.1:11235:11235"
+```
+
 Then run the server:
 
 ```bash
 SEARXNG_URL=http://localhost:8080 CRAWL4AI_URL=http://localhost:11235 pnpm run start
 ```
 
-The server is available at `http://localhost:3000`.
+The natively-run server is available at `http://localhost:3000`.
 
 ### 3. Or run everything in Docker
 
@@ -384,6 +397,8 @@ docker compose up
 ```
 
 As in step 2, the first run builds the images locally before starting, so expect several minutes on a cold cache. `web_tools` now runs in its own container; Compose passes it the same `CRAWL4AI_API_TOKEN` default it passes Crawl4AI, so the two agree with no setup on your part.
+
+The API is served at `http://localhost:60521` (override the host port with `WEB_TOOLS_PORT`). Only `web_tools` is reachable from the host — SearXNG, Crawl4AI, and Redis are internal to the Compose network, and `web_tools` addresses them by service name. The high non-default port keeps `3000`, `8080`, `11235`, and `6379` free for other work.
 
 `API_KEY` is deliberately left unset here, so the local stack serves every route **unauthenticated** and the server logs an `auth_disabled` warning at startup. That is fine on a local machine and unsafe anywhere reachable — set `API_KEY` for any deployment.
 
